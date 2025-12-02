@@ -367,8 +367,8 @@ function connect() {
                         case 'listchars': {
                             const characters = context.characters.slice(1);
                             if (characters.length > 0) {
-                                // 分页参数：每页显示30个角色
-                                const PAGE_SIZE = 30;
+                                // 分页参数：每页显示20个角色
+                                const PAGE_SIZE = 20;
                                 const page = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
                                 const totalPages = Math.ceil(characters.length / PAGE_SIZE);
                                 const currentPage = Math.max(1, Math.min(page, totalPages));
@@ -376,12 +376,26 @@ function connect() {
                                 const endIndex = Math.min(startIndex + PAGE_SIZE, characters.length);
                                 const pageChars = characters.slice(startIndex, endIndex);
 
-                                replyText = `📋 角色列表 (第${currentPage}/${totalPages}页，共${characters.length}个)\n\n`;
+                                replyText = `📋 角色列表 (${currentPage}/${totalPages}页)\n\n`;
                                 pageChars.forEach((char, index) => {
                                     const globalIndex = startIndex + index + 1;
                                     replyText += `${globalIndex}. /switchchar_${globalIndex} - ${char.name}\n`;
                                 });
-                                replyText += `\n📖 翻页: /listchars <页码>\n🔄 切换: /switchchar_数字`;
+                                
+                                // 发送带分页信息的回复
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({
+                                        type: 'ai_reply',
+                                        chatId: data.chatId,
+                                        text: replyText,
+                                        pagination: {
+                                            currentPage,
+                                            totalPages,
+                                            type: 'listchars'
+                                        }
+                                    }));
+                                }
+                                return; // 直接返回，不走默认发送逻辑
                             } else {
                                 replyText = '没有找到可用角色。';
                             }
@@ -414,8 +428,8 @@ function connect() {
                             }
                             const chatFiles = await getPastCharacterChats(context.characterId);
                             if (chatFiles.length > 0) {
-                                // 分页参数：每页显示20个聊天记录
-                                const CHAT_PAGE_SIZE = 20;
+                                // 分页参数：每页显示15个聊天记录
+                                const CHAT_PAGE_SIZE = 15;
                                 const chatPage = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
                                 const chatTotalPages = Math.ceil(chatFiles.length / CHAT_PAGE_SIZE);
                                 const chatCurrentPage = Math.max(1, Math.min(chatPage, chatTotalPages));
@@ -423,13 +437,27 @@ function connect() {
                                 const chatEndIndex = Math.min(chatStartIndex + CHAT_PAGE_SIZE, chatFiles.length);
                                 const pageChats = chatFiles.slice(chatStartIndex, chatEndIndex);
 
-                                replyText = `💬 聊天记录 (第${chatCurrentPage}/${chatTotalPages}页，共${chatFiles.length}个)\n\n`;
+                                replyText = `💬 聊天记录 (${chatCurrentPage}/${chatTotalPages}页)\n\n`;
                                 pageChats.forEach((chat, index) => {
                                     const globalIndex = chatStartIndex + index + 1;
                                     const chatName = chat.file_name.replace('.jsonl', '');
                                     replyText += `${globalIndex}. /switchchat_${globalIndex} - ${chatName}\n`;
                                 });
-                                replyText += `\n📖 翻页: /listchats <页码>\n🔄 切换: /switchchat_数字`;
+                                
+                                // 发送带分页信息的回复
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({
+                                        type: 'ai_reply',
+                                        chatId: data.chatId,
+                                        text: replyText,
+                                        pagination: {
+                                            currentPage: chatCurrentPage,
+                                            totalPages: chatTotalPages,
+                                            type: 'listchats'
+                                        }
+                                    }));
+                                }
+                                return; // 直接返回，不走默认发送逻辑
                             } else {
                                 replyText = '当前角色没有任何聊天记录。';
                             }

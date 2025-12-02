@@ -580,27 +580,47 @@ async function handleTelegramCommand(command, args, chatId) {
     // 默认回复
     let replyText = `未知命令: /${command}。 使用 /help 查看所有命令。`;
 
-    // 特殊处理help命令，无论SillyTavern是否连接都可以显示
+    // 特殊处理help命令，显示带按钮的菜单
     if (command === 'help') {
-        replyText = `SillyTavern Telegram Bridge 命令：\n\n`;
-        replyText += `聊天管理\n`;
-        replyText += `/new - 开始与当前角色的新聊天。\n`;
-        replyText += `/listchats - 列出当前角色的所有已保存的聊天记录。\n`;
-        replyText += `/switchchat <chat_name> - 加载特定的聊天记录。\n`;
-        replyText += `/switchchat_<序号> - 通过序号加载聊天记录。\n\n`;
-        replyText += `角色管理\n`;
-        replyText += `/listchars - 列出所有可用角色。\n`;
-        replyText += `/switchchar <char_name> - 切换到指定角色。\n`;
-        replyText += `/switchchar_<序号> - 通过序号切换角色。\n\n`;
-        replyText += `系统管理\n`;
-        replyText += `/reload - 重载插件的服务器端组件并刷新ST网页。\n`;
-        replyText += `/restart - 刷新ST网页并重启插件的服务器端组件。\n`;
-        replyText += `/exit - 退出插件的服务器端组件。\n`;
-        replyText += `/ping - 检查连接状态。\n\n`;
-        replyText += `帮助\n`;
-        replyText += `/help - 显示此帮助信息。`;
-
-        // 发送帮助信息并返回
+        replyText = `🤖 SillyTavern Telegram Bridge\n\n点击下方按钮快速操作，或使用命令：`;
+        
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: '📋 角色列表', callback_data: 'cmd_listchars' },
+                    { text: '💬 聊天记录', callback_data: 'cmd_listchats' }
+                ],
+                [
+                    { text: '🆕 新建聊天', callback_data: 'cmd_new' },
+                    { text: '📡 连接状态', callback_data: 'cmd_ping' }
+                ],
+                [
+                    { text: '🔄 重载服务', callback_data: 'cmd_reload' },
+                    { text: '❓ 命令帮助', callback_data: 'cmd_helptext' }
+                ]
+            ]
+        };
+        
+        bot.sendMessage(chatId, replyText, { reply_markup: keyboard });
+        return;
+    }
+    
+    // 显示详细帮助文本
+    if (command === 'helptext') {
+        replyText = `📖 命令列表：\n\n`;
+        replyText += `💬 聊天管理\n`;
+        replyText += `/new - 开始新聊天\n`;
+        replyText += `/listchats [页码] - 聊天记录列表\n`;
+        replyText += `/switchchat_<序号> - 切换聊天\n\n`;
+        replyText += `👤 角色管理\n`;
+        replyText += `/listchars [页码] - 角色列表\n`;
+        replyText += `/switchchar_<序号> - 切换角色\n\n`;
+        replyText += `⚙️ 系统管理\n`;
+        replyText += `/ping - 连接状态\n`;
+        replyText += `/reload - 重载服务\n`;
+        replyText += `/restart - 重启服务\n`;
+        replyText += `/exit - 退出服务`;
+        
         sendLongMessage(bot, chatId, replyText);
         return;
     }
@@ -943,8 +963,35 @@ wss.on('connection', ws => {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
                     ongoingStreams.delete(data.chatId);
                 }
-                // 发送非流式回复（支持超长消息分割）
-                await sendLongMessage(bot, data.chatId, data.text);
+                
+                // 检查是否有分页信息，添加分页按钮
+                const sendOptions = {};
+                if (data.pagination) {
+                    const { currentPage, totalPages, type } = data.pagination;
+                    const buttons = [];
+                    
+                    // 上一页按钮
+                    if (currentPage > 1) {
+                        buttons.push({ text: '⬅️ 上一页', callback_data: `cmd_${type}_${currentPage - 1}` });
+                    }
+                    // 下一页按钮
+                    if (currentPage < totalPages) {
+                        buttons.push({ text: '➡️ 下一页', callback_data: `cmd_${type}_${currentPage + 1}` });
+                    }
+                    
+                    if (buttons.length > 0) {
+                        sendOptions.reply_markup = {
+                            inline_keyboard: [buttons]
+                        };
+                    }
+                }
+                
+                // 发送非流式回复
+                await bot.sendMessage(data.chatId, data.text, sendOptions).catch(err => {
+                    logWithTimestamp('error', `发送非流式AI回复失败: ${err.message}`);
+                    // 如果带按钮发送失败，尝试不带按钮发送
+                    sendLongMessage(bot, data.chatId, data.text);
+                });
             } else if (data.type === 'typing_action' && data.chatId) {
                 logWithTimestamp('log', `显示"输入中"状态给Telegram用户 ${data.chatId}`);
                 bot.sendChatAction(data.chatId, 'typing').catch(error =>
@@ -1028,6 +1075,57 @@ if (process.env.RESTART_NOTIFY_CHATID) {
         }, 2000);
     }
 }
+
+// 监听内联键盘按钮回调
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const userId = callbackQuery.from.id;
+    const data = callbackQuery.data;
+    
+    logWithTimestamp('log', `收到按钮回调: ${data}, 用户: ${userId}`);
+    
+    // 检查白名单
+    if (config.allowedUserIds && config.allowedUserIds.length > 0) {
+        if (!config.allowedUserIds.includes(userId)) {
+            bot.answerCallbackQuery(callbackQuery.id, { text: '您无权使用此功能' });
+            return;
+        }
+    }
+    
+    // 确认收到回调
+    bot.answerCallbackQuery(callbackQuery.id);
+    
+    // 解析命令
+    if (data.startsWith('cmd_')) {
+        const command = data.replace('cmd_', '');
+        
+        // 处理分页命令
+        if (data.startsWith('cmd_listchars_')) {
+            const page = parseInt(data.replace('cmd_listchars_', ''));
+            handleTelegramCommand('listchars', [page.toString()], chatId);
+            return;
+        }
+        if (data.startsWith('cmd_listchats_')) {
+            const page = parseInt(data.replace('cmd_listchats_', ''));
+            handleTelegramCommand('listchats', [page.toString()], chatId);
+            return;
+        }
+        
+        // 处理普通命令
+        switch (command) {
+            case 'listchars':
+            case 'listchats':
+            case 'new':
+            case 'ping':
+            case 'reload':
+            case 'helptext':
+                handleTelegramCommand(command, [], chatId);
+                break;
+            default:
+                bot.sendMessage(chatId, '未知操作');
+        }
+    }
+});
 
 // 监听Telegram消息
 bot.on('message', (msg) => {
