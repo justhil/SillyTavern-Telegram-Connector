@@ -353,11 +353,21 @@ function connect() {
                         case 'listchars': {
                             const characters = context.characters.slice(1);
                             if (characters.length > 0) {
-                                replyText = '可用角色列表：\n\n';
-                                characters.forEach((char, index) => {
-                                    replyText += `${index + 1}. /switchchar_${index + 1} - ${char.name}\n`;
+                                // 分页参数：每页显示30个角色
+                                const PAGE_SIZE = 30;
+                                const page = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const totalPages = Math.ceil(characters.length / PAGE_SIZE);
+                                const currentPage = Math.max(1, Math.min(page, totalPages));
+                                const startIndex = (currentPage - 1) * PAGE_SIZE;
+                                const endIndex = Math.min(startIndex + PAGE_SIZE, characters.length);
+                                const pageChars = characters.slice(startIndex, endIndex);
+
+                                replyText = `📋 角色列表 (第${currentPage}/${totalPages}页，共${characters.length}个)\n\n`;
+                                pageChars.forEach((char, index) => {
+                                    const globalIndex = startIndex + index + 1;
+                                    replyText += `${globalIndex}. /switchchar_${globalIndex} - ${char.name}\n`;
                                 });
-                                replyText += '\n使用 /switchchar_数字 或 /switchchar 角色名称 来切换角色';
+                                replyText += `\n📖 翻页: /listchars <页码>\n🔄 切换: /switchchar_数字`;
                             } else {
                                 replyText = '没有找到可用角色。';
                             }
@@ -390,12 +400,22 @@ function connect() {
                             }
                             const chatFiles = await getPastCharacterChats(context.characterId);
                             if (chatFiles.length > 0) {
-                                replyText = '当前角色的聊天记录：\n\n';
-                                chatFiles.forEach((chat, index) => {
+                                // 分页参数：每页显示20个聊天记录
+                                const CHAT_PAGE_SIZE = 20;
+                                const chatPage = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const chatTotalPages = Math.ceil(chatFiles.length / CHAT_PAGE_SIZE);
+                                const chatCurrentPage = Math.max(1, Math.min(chatPage, chatTotalPages));
+                                const chatStartIndex = (chatCurrentPage - 1) * CHAT_PAGE_SIZE;
+                                const chatEndIndex = Math.min(chatStartIndex + CHAT_PAGE_SIZE, chatFiles.length);
+                                const pageChats = chatFiles.slice(chatStartIndex, chatEndIndex);
+
+                                replyText = `💬 聊天记录 (第${chatCurrentPage}/${chatTotalPages}页，共${chatFiles.length}个)\n\n`;
+                                pageChats.forEach((chat, index) => {
+                                    const globalIndex = chatStartIndex + index + 1;
                                     const chatName = chat.file_name.replace('.jsonl', '');
-                                    replyText += `${index + 1}. /switchchat_${index + 1} - ${chatName}\n`;
+                                    replyText += `${globalIndex}. /switchchat_${globalIndex} - ${chatName}\n`;
                                 });
-                                replyText += '\n使用 /switchchat_数字 或 /switchchat 聊天名称 来切换聊天';
+                                replyText += `\n📖 翻页: /listchats <页码>\n🔄 切换: /switchchat_数字`;
                             } else {
                                 replyText = '当前角色没有任何聊天记录。';
                             }

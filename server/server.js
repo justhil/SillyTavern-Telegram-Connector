@@ -5,6 +5,87 @@ const fs = require('fs');
 const path = require('path');
 const MessageFormatter = require('./messageFormatter');
 
+// Telegram 消息长度限制
+const TELEGRAM_MAX_LENGTH = 4096;
+
+/**
+ * 将长消息分割成多个部分，确保每部分不超过 Telegram 限制
+ * @param {string} text - 原始文本
+ * @param {number} maxLength - 最大长度，默认 4096
+ * @returns {string[]} - 分割后的消息数组
+ */
+function splitLongMessage(text, maxLength = TELEGRAM_MAX_LENGTH) {
+    if (!text || text.length <= maxLength) {
+        return [text];
+    }
+
+    const parts = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+        if (remaining.length <= maxLength) {
+            parts.push(remaining);
+            break;
+        }
+
+        // 尝试在换行符处分割
+        let splitIndex = remaining.lastIndexOf('\n', maxLength);
+        
+        // 如果没有找到换行符，尝试在空格处分割
+        if (splitIndex === -1 || splitIndex < maxLength * 0.5) {
+            splitIndex = remaining.lastIndexOf(' ', maxLength);
+        }
+        
+        // 如果还是没找到，强制在 maxLength 处分割
+        if (splitIndex === -1 || splitIndex < maxLength * 0.5) {
+            splitIndex = maxLength;
+        }
+
+        parts.push(remaining.substring(0, splitIndex));
+        remaining = remaining.substring(splitIndex).trimStart();
+    }
+
+    // 添加分页标记
+    if (parts.length > 1) {
+        parts.forEach((part, index) => {
+            parts[index] = `📄 [${index + 1}/${parts.length}]\n\n${part}`;
+        });
+    }
+
+    return parts;
+}
+
+/**
+ * 发送消息到 Telegram，自动处理超长消息
+ * @param {TelegramBot} bot - Telegram Bot 实例
+ * @param {number} chatId - 聊天 ID
+ * @param {string} text - 消息文本
+ * @param {object} options - 发送选项
+ */
+async function sendLongMessage(bot, chatId, text, options = {}) {
+    const parts = splitLongMessage(text);
+    
+    for (let i = 0; i < parts.length; i++) {
+        try {
+            await bot.sendMessage(chatId, parts[i], options);
+            // 如果有多条消息，稍微延迟避免触发限流
+            if (parts.length > 1 && i < parts.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        } catch (err) {
+            logWithTimestamp('error', `发送消息第${i + 1}/${parts.length}部分失败:`, err.message);
+            // 如果格式化消息发送失败，尝试纯文本
+            if (options.parse_mode) {
+                try {
+                    await bot.sendMessage(chatId, parts[i]);
+                } catch (fallbackErr) {
+                    logWithTimestamp('error', '回退到纯文本也失败:', fallbackErr.message);
+                }
+            }
+        }
+    }
+}
+
 // 添加日志记录函数，带有时间戳
 function logWithTimestamp(level, ...args) {
     const now = new Date();
@@ -520,15 +601,13 @@ async function handleTelegramCommand(command, args, chatId) {
         replyText += `/help - 显示此帮助信息。`;
 
         // 发送帮助信息并返回
-        bot.sendMessage(chatId, replyText).catch(err => {
-            logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
-        });
+        sendLongMessage(bot, chatId, replyText);
         return;
     }
 
     // 检查SillyTavern是否连接
     if (!sillyTavernClient || sillyTavernClient.readyState !== WebSocket.OPEN) {
-        bot.sendMessage(chatId, 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。');
+        sendLongMessage(bot, chatId, 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。');
         return;
     }
 
@@ -611,10 +690,8 @@ async function handleTelegramCommand(command, args, chatId) {
             }
     }
 
-    // 发送回复
-    bot.sendMessage(chatId, replyText).catch(err => {
-        logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
-    });
+    // 发送回复（支持超长消息分割）
+    sendLongMessage(bot, chatId, replyText);
 }
 
 // --- WebSocket服务器逻辑 ---
@@ -802,15 +879,8 @@ wss.on('connection', ws => {
                         if (formatted.parseMode) {
                             sendOptions.parse_mode = formatted.parseMode;
                         }
-                        await bot.sendMessage(data.chatId, formatted.text, sendOptions).catch(async err => {
-                            logWithTimestamp('error', '发送最终消息失败:', err.message);
-                            // 格式化失败回退机制
-                            if (formatted.parseMode) {
-                                await bot.sendMessage(data.chatId, data.text).catch(fallbackErr => {
-                                    logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
-                                });
-                            }
-                        });
+                        // 使用支持超长消息的发送函数
+                        await sendLongMessage(bot, data.chatId, formatted.text, sendOptions);
                     }
                     // 清理流式会话
                     ongoingStreams.delete(data.chatId);
@@ -823,15 +893,8 @@ wss.on('connection', ws => {
                     if (formatted.parseMode) {
                         sendOptions.parse_mode = formatted.parseMode;
                     }
-                    await bot.sendMessage(data.chatId, formatted.text, sendOptions).catch(async err => {
-                        logWithTimestamp('error', '发送非流式完整回复失败:', err.message);
-                        // 格式化失败回退机制
-                        if (formatted.parseMode) {
-                            await bot.sendMessage(data.chatId, data.text).catch(fallbackErr => {
-                                logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
-                            });
-                        }
-                    });
+                    // 使用支持超长消息的发送函数
+                    await sendLongMessage(bot, data.chatId, formatted.text, sendOptions);
                 }
                 return;
             }
@@ -839,7 +902,7 @@ wss.on('connection', ws => {
             // --- 其他消息处理逻辑 ---
             if (data.type === 'error_message' && data.chatId) {
                 logWithTimestamp('error', `收到SillyTavern的错误报告，将发送至Telegram用户 ${data.chatId}: ${data.text}`);
-                bot.sendMessage(data.chatId, data.text);
+                await sendLongMessage(bot, data.chatId, data.text);
             } else if (data.type === 'ai_reply' && data.chatId) {
                 logWithTimestamp('log', `收到非流式AI回复，发送至Telegram用户 ${data.chatId}`);
                 // 确保在发送消息前清理可能存在的流式会话
@@ -847,10 +910,8 @@ wss.on('connection', ws => {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
                     ongoingStreams.delete(data.chatId);
                 }
-                // 发送非流式回复
-                await bot.sendMessage(data.chatId, data.text).catch(err => {
-                    logWithTimestamp('error', `发送非流式AI回复失败: ${err.message}`);
-                });
+                // 发送非流式回复（支持超长消息分割）
+                await sendLongMessage(bot, data.chatId, data.text);
             } else if (data.type === 'typing_action' && data.chatId) {
                 logWithTimestamp('log', `显示"输入中"状态给Telegram用户 ${data.chatId}`);
                 bot.sendChatAction(data.chatId, 'typing').catch(error =>
