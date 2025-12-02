@@ -16,7 +16,7 @@
 
 ### 1. 安装扩展
 
-在 SillyTavern 中：Extensions → Install Extension → 输入仓库 URL
+在 SillyTavern 中：Extensions → Install Extension → 输入[仓库 URL](https://github.com/justhil/SillyTavern-Telegram-Connector)
 
 ### 2. 部署服务器
 
@@ -25,8 +25,8 @@
 ```bash
 cd server
 
-# 创建 .env 文件
-echo "TELEGRAM_BOT_TOKEN=你的Token" > .env
+# 创建 configjs 文件
+参考config.example.js
 
 # 启动
 docker-compose up -d
@@ -69,19 +69,8 @@ node server.js
 | `TELEGRAM_BOT_TOKEN` | Bot Token | 必填 |
 | `WSS_PORT` | WebSocket 端口 | 2333 |
 | `ALLOWED_USER_IDS` | 白名单（逗号分隔） | 空 |
-| `MESSAGE_PARSE_MODE` | 消息格式 | HTML |
-
-### Nginx WSS 代理
-
-```nginx
-location /tg-bridge {
-    proxy_pass http://127.0.0.1:2333;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 86400;
-}
-```
+*| `MESSAGE_PARSE_MODE` | 消息格式 | HTML |
+当前版本检测到前端部分会直接停止输出，tg没法渲染而且太长了分页体验也不好。
 
 ## 许可证
 
