@@ -723,6 +723,8 @@ wss.on('connection', ws => {
 
                 // 1. 如果会话不存在，立即同步创建一个占位会话
                 if (!session) {
+                    logWithTimestamp('log', `创建新会话，ChatID: ${data.chatId}`);
+                    
                     // 使用let声明，以便在Promise内部访问
                     let resolveMessagePromise;
                     const messagePromise = new Promise(resolve => {
@@ -734,25 +736,31 @@ wss.on('connection', ws => {
 
                     session = {
                         messagePromise: messagePromise,
+                        resolveMessagePromise: resolveMessagePromise, // 保存 resolve 函数
+                        messageId: null, // 直接存储 messageId
                         lastText: data.text,
                         timer: null,
                         isEditing: false,
-                        typingInterval: typingInterval, // 新增: 持续typing状态定时器
-                        charCount: data.text ? data.text.length : 0, // 新增: 字符计数
+                        sendingInitial: false, // 标记是否正在发送初始消息
+                        typingInterval: typingInterval,
+                        charCount: data.text ? data.text.length : 0,
                     };
                     ongoingStreams.set(data.chatId, session);
 
                     // 只有当字符数超过阈值时才发送初始消息 (Requirement 3.2)
                     if (session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
+                        session.sendingInitial = true;
                         logWithTimestamp('log', `字符数 ${session.charCount} 超过阈值，发送初始消息...`);
                         // 截断过长的文本，避免超过 Telegram 限制
                         const displayText = data.text.length > 4000 ? data.text.substring(0, 4000) + '...' : data.text + ' ...';
                         bot.sendMessage(data.chatId, displayText)
                             .then(sentMessage => {
                                 logWithTimestamp('log', `初始消息发送成功，messageId: ${sentMessage.message_id}`);
+                                session.messageId = sentMessage.message_id;
                                 resolveMessagePromise(sentMessage.message_id);
                             }).catch(err => {
                                 logWithTimestamp('error', '发送初始Telegram消息失败:', err.message);
+                                session.sendingInitial = false;
                                 stopTypingInterval(session.typingInterval);
                                 ongoingStreams.delete(data.chatId);
                             });
@@ -762,52 +770,47 @@ wss.on('connection', ws => {
                     session.lastText = data.text;
                     session.charCount = data.text ? data.text.length : 0;
 
-                    // 检查是否达到字符阈值且尚未发送初始消息 (Requirement 3.2)
-                    const currentMessageId = await session.messagePromise.catch(() => null);
-                    if (!currentMessageId && session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
-                        // 需要发送初始消息
+                    // 检查是否达到字符阈值且尚未发送初始消息
+                    if (!session.messageId && session.charCount >= MIN_CHARS_BEFORE_DISPLAY && !session.sendingInitial) {
+                        // 标记正在发送初始消息，避免重复发送
+                        session.sendingInitial = true;
                         logWithTimestamp('log', `会话已存在，字符数 ${session.charCount} 超过阈值，发送初始消息...`);
-                        let resolveMessagePromise;
-                        session.messagePromise = new Promise(resolve => {
-                            resolveMessagePromise = resolve;
-                        });
 
                         // 截断过长的文本
                         const displayText = data.text.length > 4000 ? data.text.substring(0, 4000) + '...' : data.text + ' ...';
                         bot.sendMessage(data.chatId, displayText)
                             .then(sentMessage => {
                                 logWithTimestamp('log', `初始消息发送成功，messageId: ${sentMessage.message_id}`);
-                                resolveMessagePromise(sentMessage.message_id);
+                                session.messageId = sentMessage.message_id;
+                                if (session.resolveMessagePromise) {
+                                    session.resolveMessagePromise(sentMessage.message_id);
+                                }
                             }).catch(err => {
                                 logWithTimestamp('error', '发送初始Telegram消息失败:', err.message);
+                                session.sendingInitial = false;
                             });
                     }
                 }
 
                 // 3. 尝试触发一次编辑（节流保护）
-                // 确保 messageId 已经获取到，并且当前没有正在进行的编辑或定时器
-                // 使用 await messagePromise 来确保messageId可用
-                const messageId = await session.messagePromise;
-
-                if (messageId && !session.isEditing && !session.timer) {
-                    session.timer = setTimeout(async () => { // 定时器回调也设为async
+                // 使用 session.messageId 直接检查
+                if (session.messageId && !session.isEditing && !session.timer) {
+                    session.timer = setTimeout(() => {
                         const currentSession = ongoingStreams.get(data.chatId);
-                        if (currentSession) {
-                            const currentMessageId = await currentSession.messagePromise;
-                            if (currentMessageId) {
-                                currentSession.isEditing = true;
-                                // 截断过长的文本
-                                const editText = currentSession.lastText.length > 4000
-                                    ? currentSession.lastText.substring(0, 4000) + '...'
-                                    : currentSession.lastText + ' ...';
-                                bot.editMessageText(editText, {
-                                    chat_id: data.chatId,
-                                    message_id: currentMessageId,
-                                }).catch(err => {
-                                    if (!err.message.includes('message is not modified'))
-                                        logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
-                                }).finally(() => {
-                                    if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
+                        if (currentSession && currentSession.messageId) {
+                            currentSession.isEditing = true;
+                            // 截断过长的文本
+                            const editText = currentSession.lastText.length > 4000
+                                ? currentSession.lastText.substring(0, 4000) + '...'
+                                : currentSession.lastText + ' ...';
+                            bot.editMessageText(editText, {
+                                chat_id: data.chatId,
+                                message_id: currentSession.messageId,
+                            }).catch(err => {
+                                if (!err.message.includes('message is not modified'))
+                                    logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
+                            }).finally(() => {
+                                if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
                                 });
                             }
                             currentSession.timer = null;
@@ -845,6 +848,7 @@ wss.on('connection', ws => {
 
             // --- 处理最终渲染后的消息更新 ---
             if (data.type === 'final_message_update' && data.chatId) {
+                logWithTimestamp('log', `收到最终渲染文本，ChatID: ${data.chatId}, 长度: ${data.text?.length || 0}`);
                 const session = ongoingStreams.get(data.chatId);
 
                 // 格式化消息 (Requirement 3.4, 4.5, 6.2, 6.3, 6.4)
@@ -856,15 +860,14 @@ wss.on('connection', ws => {
                     // 停止"输入中"状态 (确保清理)
                     stopTypingInterval(session.typingInterval);
 
-                    // 使用 await messagePromise
-                    const messageId = await session.messagePromise.catch(() => null);
-                    if (messageId) {
-                        logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${messageId}`);
+                    // 直接使用 session.messageId
+                    if (session.messageId) {
+                        logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${session.messageId}`);
 
                         // 构建消息选项
                         const messageOptions = {
                             chat_id: data.chatId,
-                            message_id: messageId,
+                            message_id: session.messageId,
                         };
 
                         // 根据配置设置 parse_mode (Requirement 6.2, 6.3, 6.4)
@@ -880,7 +883,7 @@ wss.on('connection', ws => {
                                     logWithTimestamp('log', '尝试回退到纯文本模式...');
                                     await bot.editMessageText(data.text, {
                                         chat_id: data.chatId,
-                                        message_id: messageId,
+                                        message_id: session.messageId,
                                     }).catch(fallbackErr => {
                                         logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
                                     });
