@@ -16,7 +16,7 @@
 
 ### 1. 安装扩展
 
-在 SillyTavern 中：Extensions → Install Extension → 输入[仓库 URL](https://github.com/justhil/SillyTavern-Telegram-Connector)
+在 SillyTavern 中：Extensions → Install Extension → 输入'''https://github.com/justhil/SillyTavern-Telegram-Connector'''
 
 ### 2. 部署服务器
 
