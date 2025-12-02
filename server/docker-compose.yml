@@ -1,0 +1,31 @@
+# docker-compose.yml for SillyTavern Telegram Bridge Server
+# 使用方法: docker-compose up -d
+
+version: '3.8'
+
+services:
+  telegram-bridge:
+    build: .
+    container_name: st-telegram-bridge
+    ports:
+      - "${WSS_PORT:-2333}:2333"
+    environment:
+      # Telegram Bot Token (必填)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      # WebSocket 端口
+      - WSS_PORT=2333
+      # 允许的用户ID列表 (逗号分隔，留空允许所有用户)
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS:-}
+      # 消息解析模式: HTML, MarkdownV2, 或留空使用纯文本
+      - MESSAGE_PARSE_MODE=${MESSAGE_PARSE_MODE:-HTML}
+    volumes:
+      # 可选: 挂载自定义配置文件
+      - ./config.js:/app/config.js:ro
+    restart: unless-stopped
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(2333, 'localhost').on('error', () => process.exit(1)).on('connect', () => process.exit(0))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

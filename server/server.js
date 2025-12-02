@@ -3,6 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
+const MessageFormatter = require('./messageFormatter');
 
 // 添加日志记录函数，带有时间戳
 function logWithTimestamp(level, ...args) {
@@ -88,26 +89,56 @@ function checkRestartProtection() {
 // 启动时检查重启保护
 checkRestartProtection();
 
+// --- 配置加载 ---
+// 支持环境变量配置 (Docker) 和配置文件配置
+
 // 检查配置文件是否存在
 const configPath = path.join(__dirname, './config.js');
-if (!fs.existsSync(configPath)) {
-    logWithTimestamp('error', '错误: 找不到配置文件 config.js！');
-    logWithTimestamp('error', '请在server目录下复制 config.example.js 为 config.js，并设置您的Telegram Bot Token');
+let config = {};
+
+// 如果配置文件存在，加载它作为基础配置
+if (fs.existsSync(configPath)) {
+    config = require('./config');
+} else if (!process.env.TELEGRAM_BOT_TOKEN) {
+    // 如果既没有配置文件也没有环境变量，则报错
+    logWithTimestamp('error', '错误: 找不到配置文件 config.js 且未设置 TELEGRAM_BOT_TOKEN 环境变量！');
+    logWithTimestamp('error', '请在server目录下复制 config.example.js 为 config.js，或设置 TELEGRAM_BOT_TOKEN 环境变量');
     process.exit(1); // 终止程序
 }
 
-const config = require('./config');
+// 环境变量优先级高于配置文件 (Requirements 2.3, 2.4)
+// 读取 TELEGRAM_BOT_TOKEN 环境变量
+const token = process.env.TELEGRAM_BOT_TOKEN || config.telegramToken;
 
-// --- 配置 ---
-// 从配置文件中获取Telegram Bot Token和WebSocket端口
-const token = config.telegramToken;
-// WebSocket服务器端口
-const wssPort = config.wssPort;
+// 读取 WSS_PORT 环境变量
+const wssPort = parseInt(process.env.WSS_PORT) || config.wssPort || 2333;
+
+// 读取 ALLOWED_USER_IDS 环境变量 (逗号分隔的用户ID列表)
+if (process.env.ALLOWED_USER_IDS) {
+    const envUserIds = process.env.ALLOWED_USER_IDS
+        .split(',')
+        .map(id => parseInt(id.trim()))
+        .filter(id => !isNaN(id));
+    if (envUserIds.length > 0) {
+        config.allowedUserIds = envUserIds;
+    }
+}
+
+// 读取 MESSAGE_PARSE_MODE 环境变量
+if (process.env.MESSAGE_PARSE_MODE) {
+    const parseMode = process.env.MESSAGE_PARSE_MODE.trim();
+    config.messageFormat = config.messageFormat || {};
+    if (parseMode === 'HTML' || parseMode === 'MarkdownV2') {
+        config.messageFormat.parseMode = parseMode;
+    } else if (parseMode === 'plain' || parseMode === '') {
+        config.messageFormat.parseMode = null;
+    }
+}
 
 // 检查是否修改了默认token
-if (token === 'TOKEN' || token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
-    logWithTimestamp('error', '错误: 请先在config.js文件中设置你的Telegram Bot Token！');
-    logWithTimestamp('error', '找到 telegramToken: \'YOUR_TELEGRAM_BOT_TOKEN_HERE\' 这一行并替换为你从BotFather获取的token');
+if (!token || token === 'TOKEN' || token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+    logWithTimestamp('error', '错误: 请设置有效的 Telegram Bot Token！');
+    logWithTimestamp('error', '可以通过环境变量 TELEGRAM_BOT_TOKEN 或在 config.js 中设置 telegramToken');
     process.exit(1); // 终止程序
 }
 
@@ -178,9 +209,83 @@ logWithTimestamp('log', `WebSocket服务器正在监听端口 ${wssPort}...`);
 
 let sillyTavernClient = null; // 用于存储连接的SillyTavern扩展客户端
 
+// 心跳定时器
+let heartbeatInterval = null;
+
+// 心跳配置
+const HEARTBEAT_INTERVAL = config.heartbeat?.interval || 30000; // 30秒
+
 // 用于存储正在进行的流式会话，调整会话结构，使用Promise来处理messageId
-// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean }
+// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean, typingInterval: NodeJS.Timeout | null, charCount: number }
 const ongoingStreams = new Map();
+
+// 流式输出配置
+const TYPING_INTERVAL = 4000; // 每4秒发送一次typing状态
+const MIN_CHARS_BEFORE_DISPLAY = config.streaming?.minCharsBeforeDisplay || 50; // 最小显示字符数
+
+// --- 心跳管理函数 ---
+/**
+ * 启动心跳检测，每30秒发送心跳消息到客户端
+ * @param {WebSocket} ws - WebSocket连接实例
+ */
+function startHeartbeat(ws) {
+    // 先清理可能存在的旧定时器
+    stopHeartbeat();
+    
+    logWithTimestamp('log', `启动心跳检测，间隔: ${HEARTBEAT_INTERVAL}ms`);
+    
+    heartbeatInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            const heartbeatMessage = {
+                type: 'heartbeat',
+                timestamp: Date.now()
+            };
+            ws.send(JSON.stringify(heartbeatMessage));
+            logWithTimestamp('log', '发送心跳包');
+        } else {
+            // 连接已关闭，停止心跳
+            stopHeartbeat();
+        }
+    }, HEARTBEAT_INTERVAL);
+}
+
+/**
+ * 停止心跳检测，清理定时器
+ */
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+        logWithTimestamp('log', '心跳检测已停止');
+    }
+}
+
+/**
+ * 启动持续"输入中"状态，每4秒发送一次typing状态
+ * @param {number} chatId - Telegram聊天ID
+ * @returns {NodeJS.Timeout} - 定时器ID
+ */
+function startTypingInterval(chatId) {
+    // 立即发送一次typing状态
+    bot.sendChatAction(chatId, 'typing').catch(error =>
+        logWithTimestamp('error', '发送"输入中"状态失败:', error));
+    
+    // 每4秒发送一次typing状态
+    return setInterval(() => {
+        bot.sendChatAction(chatId, 'typing').catch(error =>
+            logWithTimestamp('error', '发送"输入中"状态失败:', error));
+    }, TYPING_INTERVAL);
+}
+
+/**
+ * 停止"输入中"状态定时器
+ * @param {NodeJS.Timeout} interval - 定时器ID
+ */
+function stopTypingInterval(interval) {
+    if (interval) {
+        clearInterval(interval);
+    }
+}
 
 // 重载服务器函数
 function reloadServer(chatId) {
@@ -516,17 +621,26 @@ async function handleTelegramCommand(command, args, chatId) {
 wss.on('connection', ws => {
     logWithTimestamp('log', 'SillyTavern扩展已连接！');
     sillyTavernClient = ws;
+    
+    // 启动心跳检测
+    startHeartbeat(ws);
 
     ws.on('message', async (message) => { // 将整个回调设为async
         let data; // 在 try 块外部声明 data
         try {
             data = JSON.parse(message);
+            
+            // --- 处理心跳响应 ---
+            if (data.type === 'heartbeat_ack') {
+                logWithTimestamp('log', '收到心跳响应');
+                return;
+            }
 
             // --- 处理流式文本块 ---
             if (data.type === 'stream_chunk' && data.chatId) {
                 let session = ongoingStreams.get(data.chatId);
 
-                // 1. 如果会话不存在，立即同步创建一个占位会话，创建会话和messagePromise
+                // 1. 如果会话不存在，立即同步创建一个占位会话
                 if (!session) {
                     // 使用let声明，以便在Promise内部访问
                     let resolveMessagePromise;
@@ -534,26 +648,51 @@ wss.on('connection', ws => {
                         resolveMessagePromise = resolve;
                     });
 
+                    // 启动持续"输入中"状态 (Requirement 3.1)
+                    const typingInterval = startTypingInterval(data.chatId);
+
                     session = {
                         messagePromise: messagePromise,
                         lastText: data.text,
                         timer: null,
-                        isEditing: false, // 新增状态锁
+                        isEditing: false,
+                        typingInterval: typingInterval, // 新增: 持续typing状态定时器
+                        charCount: data.text ? data.text.length : 0, // 新增: 字符计数
                     };
                     ongoingStreams.set(data.chatId, session);
 
-                    // 异步发送第一条消息并更新 session
-                    bot.sendMessage(data.chatId, '正在思考...')
-                        .then(sentMessage => {
-                            // 当消息发送成功时，解析Promise并传入messageId
-                            resolveMessagePromise(sentMessage.message_id);
-                        }).catch(err => {
-                            logWithTimestamp('error', '发送初始Telegram消息失败:', err);
-                            ongoingStreams.delete(data.chatId); // 出错时清理
-                        });
+                    // 只有当字符数超过阈值时才发送初始消息 (Requirement 3.2)
+                    if (session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
+                        bot.sendMessage(data.chatId, data.text + ' ...')
+                            .then(sentMessage => {
+                                resolveMessagePromise(sentMessage.message_id);
+                            }).catch(err => {
+                                logWithTimestamp('error', '发送初始Telegram消息失败:', err);
+                                stopTypingInterval(session.typingInterval);
+                                ongoingStreams.delete(data.chatId);
+                            });
+                    }
                 } else {
-                    // 2. 如果会话存在，只更新最新文本
+                    // 2. 如果会话存在，更新最新文本和字符计数
                     session.lastText = data.text;
+                    session.charCount = data.text ? data.text.length : 0;
+                    
+                    // 检查是否达到字符阈值且尚未发送初始消息 (Requirement 3.2)
+                    const currentMessageId = await session.messagePromise.catch(() => null);
+                    if (!currentMessageId && session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
+                        // 需要发送初始消息
+                        let resolveMessagePromise;
+                        session.messagePromise = new Promise(resolve => {
+                            resolveMessagePromise = resolve;
+                        });
+                        
+                        bot.sendMessage(data.chatId, data.text + ' ...')
+                            .then(sentMessage => {
+                                resolveMessagePromise(sentMessage.message_id);
+                            }).catch(err => {
+                                logWithTimestamp('error', '发送初始Telegram消息失败:', err);
+                            });
+                    }
                 }
 
                 // 3. 尝试触发一次编辑（节流保护）
@@ -593,6 +732,9 @@ wss.on('connection', ws => {
                     if (session.timer) {
                         clearTimeout(session.timer);
                     }
+                    // 停止"输入中"状态 (Requirement 3.1)
+                    stopTypingInterval(session.typingInterval);
+                    session.typingInterval = null;
                     logWithTimestamp('log', `收到流式结束信号，等待最终渲染文本更新...`);
                     // 注意：我们不在这里清理会话，而是等待final_message_update
                 }
@@ -612,38 +754,83 @@ wss.on('connection', ws => {
             if (data.type === 'final_message_update' && data.chatId) {
                 const session = ongoingStreams.get(data.chatId);
 
+                // 格式化消息 (Requirement 3.4, 4.5, 6.2, 6.3, 6.4)
+                const formatConfig = config.messageFormat || {};
+                const formatted = MessageFormatter.format(data.text, formatConfig);
+                
                 // 如果会话存在，说明是流式传输的最终更新
                 if (session) {
+                    // 停止"输入中"状态 (确保清理)
+                    stopTypingInterval(session.typingInterval);
+                    
                     // 使用 await messagePromise
-                    const messageId = await session.messagePromise;
+                    const messageId = await session.messagePromise.catch(() => null);
                     if (messageId) {
                         logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${messageId}`);
-                        await bot.editMessageText(data.text, {
+                        
+                        // 构建消息选项
+                        const messageOptions = {
                             chat_id: data.chatId,
                             message_id: messageId,
-                            // 可选：在这里指定 parse_mode: 'MarkdownV2' 或 'HTML'
-                            // parse_mode: 'HTML',
-                        }).catch(err => {
-                            if (!err.message.includes('message is not modified'))
+                        };
+                        
+                        // 根据配置设置 parse_mode (Requirement 6.2, 6.3, 6.4)
+                        if (formatted.parseMode) {
+                            messageOptions.parse_mode = formatted.parseMode;
+                        }
+                        
+                        await bot.editMessageText(formatted.text, messageOptions).catch(async err => {
+                            if (!err.message.includes('message is not modified')) {
                                 logWithTimestamp('error', '编辑最终格式化Telegram消息失败:', err.message);
+                                // 格式化失败回退机制 (Requirement 4.5)
+                                if (formatted.parseMode) {
+                                    logWithTimestamp('log', '尝试回退到纯文本模式...');
+                                    await bot.editMessageText(data.text, {
+                                        chat_id: data.chatId,
+                                        message_id: messageId,
+                                    }).catch(fallbackErr => {
+                                        logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
+                                    });
+                                }
+                            }
                         });
-                        logWithTimestamp('log', `ChatID ${data.chatId} 的流式传输准最终更新已发送。`);
+                        logWithTimestamp('log', `ChatID ${data.chatId} 的流式传输最终更新已发送。`);
                     } else {
-                        logWithTimestamp('warn', `收到final_message_update，但流式会话的messageId未能获取。`);
+                        // 如果没有messageId，说明字符数未达到阈值，直接发送新消息
+                        logWithTimestamp('log', `流式会话未发送初始消息，直接发送最终消息到 ChatID ${data.chatId}`);
+                        const sendOptions = {};
+                        if (formatted.parseMode) {
+                            sendOptions.parse_mode = formatted.parseMode;
+                        }
+                        await bot.sendMessage(data.chatId, formatted.text, sendOptions).catch(async err => {
+                            logWithTimestamp('error', '发送最终消息失败:', err.message);
+                            // 格式化失败回退机制
+                            if (formatted.parseMode) {
+                                await bot.sendMessage(data.chatId, data.text).catch(fallbackErr => {
+                                    logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
+                                });
+                            }
+                        });
                     }
                     // 清理流式会话
                     ongoingStreams.delete(data.chatId);
                     logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已完成并清理。`);
                 }
                 // 如果会话不存在，说明这是一个完整的非流式回复
-                // 注意：这种情况不应该发生，因为我们已经在客户端修复了这个问题
-                // 但为了健壮性，我们仍然保留这个处理
                 else {
                     logWithTimestamp('log', `收到非流式完整回复，直接发送新消息到 ChatID ${data.chatId}`);
-                    await bot.sendMessage(data.chatId, data.text, {
-                        // 可选：在这里指定 parse_mode
-                    }).catch(err => {
+                    const sendOptions = {};
+                    if (formatted.parseMode) {
+                        sendOptions.parse_mode = formatted.parseMode;
+                    }
+                    await bot.sendMessage(data.chatId, formatted.text, sendOptions).catch(async err => {
                         logWithTimestamp('error', '发送非流式完整回复失败:', err.message);
+                        // 格式化失败回退机制
+                        if (formatted.parseMode) {
+                            await bot.sendMessage(data.chatId, data.text).catch(fallbackErr => {
+                                logWithTimestamp('error', '回退到纯文本模式也失败:', fallbackErr.message);
+                            });
+                        }
                     });
                 }
                 return;
@@ -674,6 +861,21 @@ wss.on('connection', ws => {
                 if (data.message) {
                     logWithTimestamp('log', `命令执行消息: ${data.message}`);
                 }
+            } else if (data.type === 'cleanup_session' && data.chatId) {
+                // 处理角色/聊天切换时的会话清理请求 (Requirement 5.4)
+                logWithTimestamp('log', `收到会话清理请求，ChatID: ${data.chatId}`);
+                const session = ongoingStreams.get(data.chatId);
+                if (session) {
+                    // 清理定时器
+                    if (session.timer) {
+                        clearTimeout(session.timer);
+                    }
+                    // 停止"输入中"状态
+                    stopTypingInterval(session.typingInterval);
+                    // 删除会话
+                    ongoingStreams.delete(data.chatId);
+                    logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已被清理（角色/聊天切换）`);
+                }
             }
         } catch (error) {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);
@@ -686,6 +888,12 @@ wss.on('connection', ws => {
 
     ws.on('close', () => {
         logWithTimestamp('log', 'SillyTavern扩展已断开连接。');
+        // 停止心跳检测
+        stopHeartbeat();
+        // 清理所有流式会话的typing定时器
+        ongoingStreams.forEach((session) => {
+            stopTypingInterval(session.typingInterval);
+        });
         if (ws.commandToExecuteOnClose) {
             const { command, chatId } = ws.commandToExecuteOnClose;
             logWithTimestamp('log', `客户端断开连接，现在执行预定命令: ${command}`);
@@ -699,6 +907,12 @@ wss.on('connection', ws => {
 
     ws.on('error', (error) => {
         logWithTimestamp('error', 'WebSocket发生错误:', error);
+        // 停止心跳检测
+        stopHeartbeat();
+        // 清理所有流式会话的typing定时器
+        ongoingStreams.forEach((session) => {
+            stopTypingInterval(session.typingInterval);
+        });
         if (sillyTavernClient) {
             sillyTavernClient.commandToExecuteOnClose = null; // 清除标记，防止意外执行
         }

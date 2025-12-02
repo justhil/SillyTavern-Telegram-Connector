@@ -35,6 +35,21 @@ let lastProcessedChatId = null; // 用于存储最后处理过的Telegram chatId
 // 添加一个全局变量来跟踪当前是否处于流式模式
 let isStreamingMode = false;
 
+// 添加一个全局变量来跟踪当前是否正在生成回复
+let isGenerating = false;
+
+// 心跳超时检测相关变量
+let heartbeatTimeoutTimer = null;
+const HEARTBEAT_TIMEOUT = 45000; // 45秒超时
+let lastHeartbeatTime = null;
+
+// 自动重连相关变量
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY = 5000; // 5秒延迟
+let reconnectTimer = null;
+let isReconnecting = false;
+
 // --- 工具函数 ---
 function getSettings() {
     if (!extensionSettings[MODULE_NAME]) {
@@ -49,6 +64,116 @@ function updateStatus(message, color) {
         statusEl.textContent = `状态： ${message}`;
         statusEl.style.color = color;
     }
+}
+
+/**
+ * 重置心跳超时定时器
+ * 每次收到心跳消息时调用，重新开始45秒倒计时
+ */
+function resetHeartbeatTimeout() {
+    // 清除旧的超时定时器
+    if (heartbeatTimeoutTimer) {
+        clearTimeout(heartbeatTimeoutTimer);
+    }
+    
+    lastHeartbeatTime = Date.now();
+    
+    // 设置新的超时定时器
+    heartbeatTimeoutTimer = setTimeout(() => {
+        console.log('[Telegram Bridge] 心跳超时，连接可能已断开');
+        updateStatus('连接超时', 'red');
+        // 标记连接断开并触发重连
+        if (ws) {
+            ws.close();
+        }
+    }, HEARTBEAT_TIMEOUT);
+}
+
+/**
+ * 清除心跳超时定时器
+ */
+function clearHeartbeatTimeout() {
+    if (heartbeatTimeoutTimer) {
+        clearTimeout(heartbeatTimeoutTimer);
+        heartbeatTimeoutTimer = null;
+    }
+    lastHeartbeatTime = null;
+}
+
+/**
+ * 处理收到的心跳消息，发送心跳响应
+ * @param {Object} data - 心跳消息数据
+ */
+function handleHeartbeat(data) {
+    console.log('[Telegram Bridge] 收到心跳包');
+    
+    // 重置超时定时器
+    resetHeartbeatTimeout();
+    
+    // 发送心跳响应
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'heartbeat_ack',
+            timestamp: data.timestamp
+        }));
+    }
+}
+
+/**
+ * 尝试自动重连
+ * 最多重试3次，每次间隔5秒
+ */
+function attemptReconnect() {
+    // 如果已经在重连中或达到最大重试次数，则不再尝试
+    if (isReconnecting) {
+        return;
+    }
+    
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.log('[Telegram Bridge] 已达到最大重连次数，停止重连');
+        updateStatus('重连失败', 'red');
+        reconnectAttempts = 0;
+        return;
+    }
+    
+    isReconnecting = true;
+    reconnectAttempts++;
+    
+    console.log(`[Telegram Bridge] 将在${RECONNECT_DELAY / 1000}秒后尝试重连 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+    updateStatus(`重连中... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'orange');
+    
+    // 清除可能存在的旧重连定时器
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+    }
+    
+    reconnectTimer = setTimeout(() => {
+        isReconnecting = false;
+        console.log(`[Telegram Bridge] 正在尝试第${reconnectAttempts}次重连...`);
+        connect();
+    }, RECONNECT_DELAY);
+}
+
+/**
+ * 重置重连状态
+ * 连接成功时调用
+ */
+function resetReconnectState() {
+    reconnectAttempts = 0;
+    isReconnecting = false;
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
+
+/**
+ * 取消重连
+ * 手动断开连接时调用
+ */
+function cancelReconnect() {
+    resetReconnectState();
+    console.log('[Telegram Bridge] 已取消自动重连');
 }
 
 function reloadPage() {
@@ -77,6 +202,10 @@ function connect() {
     ws.onopen = () => {
         console.log('[Telegram Bridge] 连接成功！');
         updateStatus('已连接', 'green');
+        // 重置重连状态
+        resetReconnectState();
+        // 启动心跳超时检测
+        resetHeartbeatTimeout();
     };
 
     ws.onmessage = async (event) => {
@@ -84,9 +213,31 @@ function connect() {
         try {
             data = JSON.parse(event.data);
 
+            // --- 心跳消息处理 ---
+            if (data.type === 'heartbeat') {
+                handleHeartbeat(data);
+                return;
+            }
+
             // --- 用户消息处理 ---
             if (data.type === 'user_message') {
                 console.log('[Telegram Bridge] 收到用户消息。', data);
+
+                // 检查是否正在生成回复，如果是则拦截消息
+                if (isGenerating) {
+                    console.log('[Telegram Bridge] 正在生成回复中，拦截新消息');
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'ai_reply',
+                            chatId: data.chatId,
+                            text: '⏳ AI正在生成回复中，请稍候...\n您的消息将在当前回复完成后处理。',
+                        }));
+                    }
+                    return;
+                }
+
+                // 标记开始生成
+                isGenerating = true;
 
                 // 存储当前处理的chatId
                 lastProcessedChatId = data.chatId;
@@ -127,6 +278,8 @@ function connect() {
                         }
                     }
                     // 注意：不在这里重置isStreamingMode，让handleFinalMessage函数来处理
+                    // 重置生成状态标志
+                    isGenerating = false;
                 };
 
                 // 5. 监听生成结束事件，确保无论成功与否都执行清理
@@ -343,18 +496,33 @@ function connect() {
 
     ws.onclose = () => {
         console.log('[Telegram Bridge] 连接已关闭。');
-        updateStatus('连接已断开', 'red');
+        // 清除心跳超时定时器
+        clearHeartbeatTimeout();
         ws = null;
+        
+        // 如果启用了自动连接，尝试重连
+        const settings = getSettings();
+        if (settings.autoConnect && !isReconnecting) {
+            updateStatus('连接已断开，准备重连...', 'orange');
+            attemptReconnect();
+        } else {
+            updateStatus('连接已断开', 'red');
+        }
     };
 
     ws.onerror = (error) => {
         console.error('[Telegram Bridge] WebSocket 错误：', error);
+        // 清除心跳超时定时器
+        clearHeartbeatTimeout();
+        // 注意：onerror后通常会触发onclose，所以这里不需要重复触发重连
+        // 只更新状态，让onclose处理重连逻辑
         updateStatus('连接错误', 'red');
-        ws = null;
     };
 }
 
 function disconnect() {
+    // 取消自动重连
+    cancelReconnect();
     if (ws) {
         ws.close();
     }
@@ -401,6 +569,78 @@ jQuery(async () => {
     console.log('[Telegram Bridge] 扩展已加载。');
 });
 
+/**
+ * 从DOM元素中提取文本，保留换行符和基本格式标记
+ * @param {jQuery} messageTextElement - 消息文本的jQuery元素
+ * @returns {string} 提取的文本，保留格式标记
+ */
+function extractTextFromDOM(messageTextElement) {
+    // 克隆元素以避免修改原始DOM
+    const clone = messageTextElement.clone();
+    
+    // 处理换行相关标签
+    clone.find('br').replaceWith('\n');
+    clone.find('p').each(function() {
+        $(this).prepend('\n\n').append('\n\n');
+    });
+    clone.find('div').each(function() {
+        $(this).append('\n');
+    });
+    
+    // 保留粗体格式标记 - 转换为 **text**
+    clone.find('b, strong').each(function() {
+        const text = $(this).text();
+        $(this).replaceWith(`**${text}**`);
+    });
+    
+    // 保留斜体格式标记 - 转换为 *text*
+    clone.find('i, em').each(function() {
+        const text = $(this).text();
+        $(this).replaceWith(`*${text}*`);
+    });
+    
+    // 保留代码块格式 - 转换为 `code` 或 ```code```
+    clone.find('code').each(function() {
+        const text = $(this).text();
+        // 检查是否是多行代码块
+        if (text.includes('\n')) {
+            $(this).replaceWith(`\`\`\`\n${text}\n\`\`\``);
+        } else {
+            $(this).replaceWith(`\`${text}\``);
+        }
+    });
+    
+    clone.find('pre').each(function() {
+        const text = $(this).text();
+        $(this).replaceWith(`\`\`\`\n${text}\n\`\`\``);
+    });
+    
+    // 获取处理后的文本内容
+    let text = clone.text();
+    
+    // 解码HTML实体
+    text = decodeHtmlEntities(text);
+    
+    // 清理多余的空行（超过2个连续换行符的替换为2个）
+    text = text.replace(/\n{3,}/g, '\n\n');
+    
+    // 去除首尾空白
+    text = text.trim();
+    
+    return text;
+}
+
+/**
+ * 解码HTML实体
+ * @param {string} text - 包含HTML实体的文本
+ * @returns {string} 解码后的文本
+ */
+function decodeHtmlEntities(text) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = text;
+    return tempDiv.textContent || tempDiv.innerText || '';
+}
+
 // 全局事件监听器，用于最终消息更新
 function handleFinalMessage(lastMessageIdInChatArray) {
     // 确保WebSocket已连接，并且我们有一个有效的chatId来发送更新
@@ -425,16 +665,8 @@ function handleFinalMessage(lastMessageIdInChatArray) {
                 // 获取消息文本元素
                 const messageTextElement = messageElement.find('.mes_text');
 
-                // 获取HTML内容并替换<br>和</p><p>为换行符
-                let renderedText = messageTextElement.html()
-                    .replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<\/p>\s*<p>/gi, '\n\n')
-                // .replace(/<[^>]*>/g, ''); // 移除所有其他HTML标签
-
-                // 解码HTML实体
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = renderedText;
-                renderedText = tempDiv.textContent;
+                // 使用优化后的DOM文本提取函数
+                const renderedText = extractTextFromDOM(messageTextElement);
 
                 console.log(`[Telegram Bridge] 捕获到最终渲染文本，准备发送更新到 chatId: ${lastProcessedChatId}`);
 
@@ -461,6 +693,8 @@ function handleFinalMessage(lastMessageIdInChatArray) {
                 lastProcessedChatId = null;
             }
         }
+        // 确保重置生成状态标志（无论是否成功发送消息）
+        isGenerating = false;
     }, 100);
 }
 
@@ -469,3 +703,48 @@ eventSource.on(event_types.GENERATION_ENDED, handleFinalMessage);
 
 // 添加对手动停止生成的处理
 eventSource.on(event_types.GENERATION_STOPPED, handleFinalMessage);
+
+/**
+ * 清理流式会话状态
+ * 当角色或聊天切换时调用，通知Bridge_Server清空旧的流式会话缓存
+ */
+function cleanupStreamSession() {
+    console.log('[Telegram Bridge] 检测到角色/聊天切换，清理流式会话状态');
+    
+    // 重置本地状态
+    isGenerating = false;
+    isStreamingMode = false;
+    
+    // 如果有正在处理的chatId，发送清理消息到Bridge_Server
+    if (ws && ws.readyState === WebSocket.OPEN && lastProcessedChatId) {
+        ws.send(JSON.stringify({
+            type: 'cleanup_session',
+            chatId: lastProcessedChatId,
+        }));
+        console.log(`[Telegram Bridge] 已发送清理消息到 chatId: ${lastProcessedChatId}`);
+    }
+    
+    // 重置chatId
+    lastProcessedChatId = null;
+}
+
+// 监听角色切换事件
+eventSource.on(event_types.CHAT_CHANGED, () => {
+    console.log('[Telegram Bridge] 检测到聊天切换');
+    cleanupStreamSession();
+});
+
+// 监听聊天加载事件（切换到不同聊天记录时触发）
+eventSource.on(event_types.CHATLOADED, () => {
+    console.log('[Telegram Bridge] 检测到聊天加载');
+    cleanupStreamSession();
+});
+
+// 监听角色选择事件
+eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
+    // 这个事件在角色消息渲染时触发，可能表示角色切换
+    // 但我们只在有活跃会话时才清理
+    if (lastProcessedChatId) {
+        console.log('[Telegram Bridge] 检测到角色消息渲染，检查是否需要清理');
+    }
+});

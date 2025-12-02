@@ -1,0 +1,34 @@
+# .dockerignore for SillyTavern Telegram Bridge Server
+# 排除不需要复制到 Docker 镜像中的文件
+
+# 依赖目录 (将在容器内重新安装)
+node_modules/
+
+# 配置文件 (使用环境变量或 volume 挂载)
+config.js
+
+# 开发文件
+*.log
+.git/
+.gitignore
+.vscode/
+*.md
+!README.md
+
+# 重启保护文件
+.restart_protection
+
+# Docker 相关文件
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 测试文件
+*.test.js
+*.spec.js
+__tests__/
+coverage/
+
+# 系统文件
+.DS_Store
+Thumbs.db

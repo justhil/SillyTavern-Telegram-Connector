@@ -8,15 +8,18 @@
 - 接收 SillyTavern 中 AI 的回复并转发回 Telegram
 - 处理特殊命令，如角色切换、聊天管理等
 - 维护 WebSocket 连接状态
+- 支持 Docker 容器化部署
 
 ## 安装
 
-### 前提条件
+### 方式一：传统安装
+
+#### 前提条件
 
 - Node.js 14.0 或更高版本
 - 已创建的 Telegram 机器人和 Bot Token
 
-### 安装步骤
+#### 安装步骤
 
 1. 安装依赖：
    ```bash
@@ -27,10 +30,10 @@
    - 复制 `config.example.js` 文件为 `config.js`：
    ```bash
    # Linux/macOS
-   cp ../config.example.js ../config.js
+   cp config.example.js config.js
    
    # Windows
-   copy ..\config.example.js ..\config.js
+   copy config.example.js config.js
    ```
    - 编辑 `config.js` 文件，将 `telegramToken` 替换为您的 Telegram Bot Token
    - 如需更改默认端口 (2333)，可修改 `wssPort` 参数
@@ -39,6 +42,86 @@
    ```bash
    node server.js
    ```
+
+### 方式二：Docker 部署
+
+#### 前提条件
+
+- Docker 和 Docker Compose
+- 已创建的 Telegram 机器人和 Bot Token
+
+#### 使用 docker-compose (推荐)
+
+1. 设置环境变量并启动：
+   ```bash
+   # 设置必需的环境变量
+   export TELEGRAM_BOT_TOKEN=your_bot_token_here
+   
+   # 启动服务
+   docker-compose up -d
+   ```
+
+2. 或者创建 `.env` 文件：
+   ```env
+   TELEGRAM_BOT_TOKEN=your_bot_token_here
+   WSS_PORT=2333
+   ALLOWED_USER_IDS=123456789,987654321
+   MESSAGE_PARSE_MODE=HTML
+   ```
+   然后运行：
+   ```bash
+   docker-compose up -d
+   ```
+
+3. 查看日志：
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. 停止服务：
+   ```bash
+   docker-compose down
+   ```
+
+#### 手动构建 Docker 镜像
+
+1. 构建镜像：
+   ```bash
+   docker build -t st-telegram-bridge .
+   ```
+
+2. 运行容器：
+   ```bash
+   docker run -d \
+     --name st-telegram-bridge \
+     -p 2333:2333 \
+     -e TELEGRAM_BOT_TOKEN=your_bot_token_here \
+     -e MESSAGE_PARSE_MODE=HTML \
+     --restart unless-stopped \
+     st-telegram-bridge
+   ```
+
+#### Docker 环境变量说明
+
+| 变量名 | 描述 | 默认值 | 必填 |
+|--------|------|--------|------|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - | 是 |
+| `WSS_PORT` | WebSocket 服务端口 | 2333 | 否 |
+| `ALLOWED_USER_IDS` | 允许的用户ID (逗号分隔) | 空 (允许所有) | 否 |
+| `MESSAGE_PARSE_MODE` | 消息格式 (HTML/MarkdownV2/plain) | HTML | 否 |
+
+#### 使用自定义配置文件
+
+如果需要更多配置选项，可以挂载自定义配置文件：
+
+```bash
+docker run -d \
+  --name st-telegram-bridge \
+  -p 2333:2333 \
+  -v $(pwd)/config.js:/app/config.js:ro \
+  --restart unless-stopped \
+  st-telegram-bridge
+```
 
 ## 使用说明
 
