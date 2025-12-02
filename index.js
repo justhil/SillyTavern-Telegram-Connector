@@ -75,9 +75,9 @@ function resetHeartbeatTimeout() {
     if (heartbeatTimeoutTimer) {
         clearTimeout(heartbeatTimeoutTimer);
     }
-    
+
     lastHeartbeatTime = Date.now();
-    
+
     // 设置新的超时定时器
     heartbeatTimeoutTimer = setTimeout(() => {
         console.log('[Telegram Bridge] 心跳超时，连接可能已断开');
@@ -106,10 +106,10 @@ function clearHeartbeatTimeout() {
  */
 function handleHeartbeat(data) {
     console.log('[Telegram Bridge] 收到心跳包');
-    
+
     // 重置超时定时器
     resetHeartbeatTimeout();
-    
+
     // 发送心跳响应
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -128,25 +128,25 @@ function attemptReconnect() {
     if (isReconnecting) {
         return;
     }
-    
+
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         console.log('[Telegram Bridge] 已达到最大重连次数，停止重连');
         updateStatus('重连失败', 'red');
         reconnectAttempts = 0;
         return;
     }
-    
+
     isReconnecting = true;
     reconnectAttempts++;
-    
+
     console.log(`[Telegram Bridge] 将在${RECONNECT_DELAY / 1000}秒后尝试重连 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
     updateStatus(`重连中... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'orange');
-    
+
     // 清除可能存在的旧重连定时器
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
     }
-    
+
     reconnectTimer = setTimeout(() => {
         isReconnecting = false;
         console.log(`[Telegram Bridge] 正在尝试第${reconnectAttempts}次重连...`);
@@ -257,10 +257,10 @@ function connect() {
                 const streamCallback = (...args) => {
                     // 调试：打印接收到的参数
                     console.log('[Telegram Bridge] STREAM_TOKEN_RECEIVED 参数:', args);
-                    
+
                     // 标记为流式模式
                     isStreamingMode = true;
-                    
+
                     // 获取累计文本 - 尝试多种可能的参数格式
                     let cumulativeText = '';
                     if (typeof args[0] === 'string') {
@@ -270,7 +270,7 @@ function connect() {
                     } else if (args[0] && typeof args[0].message === 'string') {
                         cumulativeText = args[0].message;
                     }
-                    
+
                     // 将每个文本块通过WebSocket发送到服务端
                     if (ws && ws.readyState === WebSocket.OPEN && cumulativeText) {
                         ws.send(JSON.stringify({
@@ -367,8 +367,8 @@ function connect() {
                         case 'listchars': {
                             const characters = context.characters.slice(1);
                             if (characters.length > 0) {
-                                // 分页参数：每页显示20个角色
-                                const PAGE_SIZE = 20;
+                                // 分页参数：每页显示10个角色（避免消息过长）
+                                const PAGE_SIZE = 10;
                                 const pageArg = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
                                 const page = isNaN(pageArg) ? 1 : pageArg;
                                 const totalPages = Math.ceil(characters.length / PAGE_SIZE);
@@ -377,12 +377,15 @@ function connect() {
                                 const endIndex = Math.min(startIndex + PAGE_SIZE, characters.length);
                                 const pageChars = characters.slice(startIndex, endIndex);
 
-                                replyText = `📋 角色列表 (${currentPage}/${totalPages}页)\n\n`;
+                                replyText = `📋 角色 (${currentPage}/${totalPages}页)\n`;
                                 pageChars.forEach((char, index) => {
                                     const globalIndex = startIndex + index + 1;
-                                    replyText += `${globalIndex}. /switchchar_${globalIndex} - ${char.name}\n`;
+                                    // 截断过长的角色名
+                                    const charName = char.name.length > 20 ? char.name.substring(0, 20) + '..' : char.name;
+                                    replyText += `${globalIndex}. ${charName}\n`;
                                 });
-                                
+                                replyText += `\n切换: /switchchar_数字`;
+
                                 // 发送带分页信息的回复
                                 if (ws && ws.readyState === WebSocket.OPEN) {
                                     ws.send(JSON.stringify({
@@ -396,7 +399,7 @@ function connect() {
                                         }
                                     }));
                                 }
-                                return; // 直接返回，不走默认发送逻辑
+                                return;
                             } else {
                                 replyText = '没有找到可用角色。';
                             }
@@ -429,8 +432,8 @@ function connect() {
                             }
                             const chatFiles = await getPastCharacterChats(context.characterId);
                             if (chatFiles.length > 0) {
-                                // 分页参数：每页显示15个聊天记录
-                                const CHAT_PAGE_SIZE = 15;
+                                // 分页参数：每页显示10个聊天记录
+                                const CHAT_PAGE_SIZE = 10;
                                 const chatPageArg = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
                                 const chatPage = isNaN(chatPageArg) ? 1 : chatPageArg;
                                 const chatTotalPages = Math.ceil(chatFiles.length / CHAT_PAGE_SIZE);
@@ -439,13 +442,16 @@ function connect() {
                                 const chatEndIndex = Math.min(chatStartIndex + CHAT_PAGE_SIZE, chatFiles.length);
                                 const pageChats = chatFiles.slice(chatStartIndex, chatEndIndex);
 
-                                replyText = `💬 聊天记录 (${chatCurrentPage}/${chatTotalPages}页)\n\n`;
+                                replyText = `💬 聊天 (${chatCurrentPage}/${chatTotalPages}页)\n`;
                                 pageChats.forEach((chat, index) => {
                                     const globalIndex = chatStartIndex + index + 1;
-                                    const chatName = chat.file_name.replace('.jsonl', '');
-                                    replyText += `${globalIndex}. /switchchat_${globalIndex} - ${chatName}\n`;
+                                    let chatName = chat.file_name.replace('.jsonl', '');
+                                    // 截断过长的聊天名
+                                    chatName = chatName.length > 20 ? chatName.substring(0, 20) + '..' : chatName;
+                                    replyText += `${globalIndex}. ${chatName}\n`;
                                 });
-                                
+                                replyText += `\n切换: /switchchat_数字`;
+
                                 // 发送带分页信息的回复
                                 if (ws && ws.readyState === WebSocket.OPEN) {
                                     ws.send(JSON.stringify({
@@ -459,7 +465,7 @@ function connect() {
                                         }
                                     }));
                                 }
-                                return; // 直接返回，不走默认发送逻辑
+                                return;
                             } else {
                                 replyText = '当前角色没有任何聊天记录。';
                             }
@@ -563,7 +569,7 @@ function connect() {
         // 清除心跳超时定时器
         clearHeartbeatTimeout();
         ws = null;
-        
+
         // 如果启用了自动连接，尝试重连
         const settings = getSettings();
         if (settings.autoConnect && !isReconnecting) {
@@ -641,30 +647,30 @@ jQuery(async () => {
 function extractTextFromDOM(messageTextElement) {
     // 克隆元素以避免修改原始DOM
     const clone = messageTextElement.clone();
-    
+
     // 处理换行相关标签
     clone.find('br').replaceWith('\n');
-    clone.find('p').each(function() {
+    clone.find('p').each(function () {
         $(this).prepend('\n\n').append('\n\n');
     });
-    clone.find('div').each(function() {
+    clone.find('div').each(function () {
         $(this).append('\n');
     });
-    
+
     // 保留粗体格式标记 - 转换为 **text**
-    clone.find('b, strong').each(function() {
+    clone.find('b, strong').each(function () {
         const text = $(this).text();
         $(this).replaceWith(`**${text}**`);
     });
-    
+
     // 保留斜体格式标记 - 转换为 *text*
-    clone.find('i, em').each(function() {
+    clone.find('i, em').each(function () {
         const text = $(this).text();
         $(this).replaceWith(`*${text}*`);
     });
-    
+
     // 保留代码块格式 - 转换为 `code` 或 ```code```
-    clone.find('code').each(function() {
+    clone.find('code').each(function () {
         const text = $(this).text();
         // 检查是否是多行代码块
         if (text.includes('\n')) {
@@ -673,24 +679,24 @@ function extractTextFromDOM(messageTextElement) {
             $(this).replaceWith(`\`${text}\``);
         }
     });
-    
-    clone.find('pre').each(function() {
+
+    clone.find('pre').each(function () {
         const text = $(this).text();
         $(this).replaceWith(`\`\`\`\n${text}\n\`\`\``);
     });
-    
+
     // 获取处理后的文本内容
     let text = clone.text();
-    
+
     // 解码HTML实体
     text = decodeHtmlEntities(text);
-    
+
     // 清理多余的空行（超过2个连续换行符的替换为2个）
     text = text.replace(/\n{3,}/g, '\n\n');
-    
+
     // 去除首尾空白
     text = text.trim();
-    
+
     return text;
 }
 
@@ -708,7 +714,7 @@ function decodeHtmlEntities(text) {
 // 全局事件监听器，用于最终消息更新
 function handleFinalMessage(lastMessageIdInChatArray) {
     console.log(`[Telegram Bridge] handleFinalMessage 被调用, lastMessageId: ${lastMessageIdInChatArray}, lastProcessedChatId: ${lastProcessedChatId}, isStreamingMode: ${isStreamingMode}`);
-    
+
     // 确保WebSocket已连接，并且我们有一个有效的chatId来发送更新
     if (!ws || ws.readyState !== WebSocket.OPEN || !lastProcessedChatId) {
         console.log('[Telegram Bridge] handleFinalMessage 提前返回: ws状态或chatId无效');
@@ -777,11 +783,11 @@ eventSource.on(event_types.GENERATION_STOPPED, handleFinalMessage);
  */
 function cleanupStreamSession() {
     console.log('[Telegram Bridge] 检测到角色/聊天切换，清理流式会话状态');
-    
+
     // 重置本地状态
     isGenerating = false;
     isStreamingMode = false;
-    
+
     // 如果有正在处理的chatId，发送清理消息到Bridge_Server
     if (ws && ws.readyState === WebSocket.OPEN && lastProcessedChatId) {
         ws.send(JSON.stringify({
@@ -790,7 +796,7 @@ function cleanupStreamSession() {
         }));
         console.log(`[Telegram Bridge] 已发送清理消息到 chatId: ${lastProcessedChatId}`);
     }
-    
+
     // 重置chatId
     lastProcessedChatId = null;
 }
