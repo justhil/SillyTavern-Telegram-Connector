@@ -108,17 +108,18 @@ SillyTavern Telegram Connector 是一个为 SillyTavern 设计的扩展，允许
   - [ ] 支持发送图片
 
 - **消息格式**：
-  - [ ] 实现markdown转义
-  - [ ] Bot信息解析方式改为HTML 
+  - [x] 实现markdown转义
+  - [x] Bot信息解析方式改为HTML（支持 HTML/MarkdownV2/纯文本 三种模式）
 
 - **架构优化**：
   - [x] 命令改为server处理，前端不再参与命令解析
+  - [x] Docker 容器化部署支持
   - [ ] 将server转换为标准服务端插件，遵循[SillyTavern服务端插件规范](https://docs.sillytavern.app/for-contributors/server-plugins/)
 
 - **用户体验改进**：
   - [x] 调整编辑消息的频率
   - [x] 流式传输优化：生成足够字数后再显示初始信息
-  - [ ] "输入中"状态持续整个流式响应过程
+  - [x] "输入中"状态持续整个流式响应过程
   - [x] 新增`/ping`命令，让用户随时查询Bridge连接状态和SillyTavern状态
 
 - **设置菜单**：
@@ -128,9 +129,23 @@ SillyTavern Telegram Connector 是一个为 SillyTavern 设计的扩展，允许
 - **错误处理与稳定性**：
   - [ ] `/exit`命令总是"退出操作超时，强制退出进程"
   - [x] 处理ST中"停止生成"按钮点击事件（GENERATION_STOPPED而非GENERATION_ENDED）
-  - [ ] 处理正在生成时发送新消息的情况（拦截并提示用户正在生成中，不提交到ST）
-  - [ ] 在`/switchchar`或`/switchchat`命令后通知server清空旧缓存状态
+  - [x] 处理正在生成时发送新消息的情况（拦截并提示用户正在生成中，不提交到ST）
+  - [x] 在`/switchchar`或`/switchchat`命令后通知server清空旧缓存状态
 
 - **技术优化**：
-  - [ ] 实现WebSocket心跳检测浏览器存活
+  - [x] 实现WebSocket心跳检测浏览器存活（30秒心跳，45秒超时，自动重连）
   - [ ] 优化setTimeout等待DOM更新的处理方式
+
+## 最近更新
+
+### v1.1.0 新增功能
+
+- **WebSocket 心跳检测**：服务端每30秒发送心跳包，客户端45秒超时自动重连，最多重试3次
+- **Docker 部署支持**：提供 Dockerfile 和 docker-compose.yml，支持一键容器化部署
+- **消息格式化**：支持 HTML/MarkdownV2/纯文本 三种输出格式，可在配置文件中切换
+- **流式输出优化**：
+  - 累计超过50字符后才显示初始消息
+  - 持续显示"输入中"状态直到生成完成
+  - 消息更新频率限制为每2秒一次
+- **生成中消息拦截**：AI生成回复时，新消息会被拦截并提示用户等待
+- **会话状态清理**：角色/聊天切换时自动清理旧的流式会话缓存
