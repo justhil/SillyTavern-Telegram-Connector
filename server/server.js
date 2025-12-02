@@ -30,12 +30,12 @@ function splitLongMessage(text, maxLength = TELEGRAM_MAX_LENGTH) {
 
         // 尝试在换行符处分割
         let splitIndex = remaining.lastIndexOf('\n', maxLength);
-        
+
         // 如果没有找到换行符，尝试在空格处分割
         if (splitIndex === -1 || splitIndex < maxLength * 0.5) {
             splitIndex = remaining.lastIndexOf(' ', maxLength);
         }
-        
+
         // 如果还是没找到，强制在 maxLength 处分割
         if (splitIndex === -1 || splitIndex < maxLength * 0.5) {
             splitIndex = maxLength;
@@ -64,7 +64,7 @@ function splitLongMessage(text, maxLength = TELEGRAM_MAX_LENGTH) {
  */
 async function sendLongMessage(bot, chatId, text, options = {}) {
     const parts = splitLongMessage(text);
-    
+
     for (let i = 0; i < parts.length; i++) {
         try {
             await bot.sendMessage(chatId, parts[i], options);
@@ -312,9 +312,9 @@ const MIN_CHARS_BEFORE_DISPLAY = config.streaming?.minCharsBeforeDisplay || 50; 
 function startHeartbeat(ws) {
     // 先清理可能存在的旧定时器
     stopHeartbeat();
-    
+
     logWithTimestamp('log', `启动心跳检测，间隔: ${HEARTBEAT_INTERVAL}ms`);
-    
+
     heartbeatInterval = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             const heartbeatMessage = {
@@ -350,7 +350,7 @@ function startTypingInterval(chatId) {
     // 立即发送一次typing状态
     bot.sendChatAction(chatId, 'typing').catch(error =>
         logWithTimestamp('error', '发送"输入中"状态失败:', error));
-    
+
     // 每4秒发送一次typing状态
     return setInterval(() => {
         bot.sendChatAction(chatId, 'typing').catch(error =>
@@ -622,10 +622,11 @@ async function handleTelegramCommand(command, args, chatId) {
             }));
             return; // 前端会发送响应，所以这里直接返回
         case 'listchars':
-            // 发送命令到前端执行
+            // 发送命令到前端执行（传递页码参数）
             sillyTavernClient.send(JSON.stringify({
                 type: 'execute_command',
                 command: 'listchars',
+                args: args,
                 chatId: chatId
             }));
             return;
@@ -644,10 +645,11 @@ async function handleTelegramCommand(command, args, chatId) {
             }
             break;
         case 'listchats':
-            // 发送命令到前端执行
+            // 发送命令到前端执行（传递页码参数）
             sillyTavernClient.send(JSON.stringify({
                 type: 'execute_command',
                 command: 'listchats',
+                args: args,
                 chatId: chatId
             }));
             return;
@@ -698,7 +700,7 @@ async function handleTelegramCommand(command, args, chatId) {
 wss.on('connection', ws => {
     logWithTimestamp('log', 'SillyTavern扩展已连接！');
     sillyTavernClient = ws;
-    
+
     // 启动心跳检测
     startHeartbeat(ws);
 
@@ -706,7 +708,7 @@ wss.on('connection', ws => {
         let data; // 在 try 块外部声明 data
         try {
             data = JSON.parse(message);
-            
+
             // --- 处理心跳响应 ---
             if (data.type === 'heartbeat_ack') {
                 logWithTimestamp('log', '收到心跳响应');
@@ -753,7 +755,7 @@ wss.on('connection', ws => {
                     // 2. 如果会话存在，更新最新文本和字符计数
                     session.lastText = data.text;
                     session.charCount = data.text ? data.text.length : 0;
-                    
+
                     // 检查是否达到字符阈值且尚未发送初始消息 (Requirement 3.2)
                     const currentMessageId = await session.messagePromise.catch(() => null);
                     if (!currentMessageId && session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
@@ -762,7 +764,7 @@ wss.on('connection', ws => {
                         session.messagePromise = new Promise(resolve => {
                             resolveMessagePromise = resolve;
                         });
-                        
+
                         bot.sendMessage(data.chatId, data.text + ' ...')
                             .then(sentMessage => {
                                 resolveMessagePromise(sentMessage.message_id);
@@ -834,28 +836,28 @@ wss.on('connection', ws => {
                 // 格式化消息 (Requirement 3.4, 4.5, 6.2, 6.3, 6.4)
                 const formatConfig = config.messageFormat || {};
                 const formatted = MessageFormatter.format(data.text, formatConfig);
-                
+
                 // 如果会话存在，说明是流式传输的最终更新
                 if (session) {
                     // 停止"输入中"状态 (确保清理)
                     stopTypingInterval(session.typingInterval);
-                    
+
                     // 使用 await messagePromise
                     const messageId = await session.messagePromise.catch(() => null);
                     if (messageId) {
                         logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${messageId}`);
-                        
+
                         // 构建消息选项
                         const messageOptions = {
                             chat_id: data.chatId,
                             message_id: messageId,
                         };
-                        
+
                         // 根据配置设置 parse_mode (Requirement 6.2, 6.3, 6.4)
                         if (formatted.parseMode) {
                             messageOptions.parse_mode = formatted.parseMode;
                         }
-                        
+
                         await bot.editMessageText(formatted.text, messageOptions).catch(async err => {
                             if (!err.message.includes('message is not modified')) {
                                 logWithTimestamp('error', '编辑最终格式化Telegram消息失败:', err.message);
