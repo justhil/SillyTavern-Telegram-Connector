@@ -865,17 +865,13 @@ wss.on('connection', ws => {
 
                         // 检查消息是否超过 Telegram 限制
                         if (formatted.text.length > 4000) {
-                            logWithTimestamp('log', `消息长度 ${formatted.text.length} 超过限制，删除原消息并分割发送`);
+                            logWithTimestamp('log', `消息长度 ${formatted.text.length} 超过限制，删除原消息并分割发送（纯文本模式）`);
                             // 删除原来的流式消息
                             await bot.deleteMessage(data.chatId, session.messageId).catch(err => {
                                 logWithTimestamp('error', '删除原消息失败:', err.message);
                             });
-                            // 使用分割发送
-                            const sendOptions = {};
-                            if (formatted.parseMode) {
-                                sendOptions.parse_mode = formatted.parseMode;
-                            }
-                            await sendLongMessage(bot, data.chatId, formatted.text, sendOptions);
+                            // 超长消息使用纯文本模式，避免 HTML 标签被分割导致解析错误
+                            await sendLongMessage(bot, data.chatId, data.text, {});
                         } else {
                             // 消息长度正常，直接编辑
                             const messageOptions = {
