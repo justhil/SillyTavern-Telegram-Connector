@@ -254,11 +254,25 @@ function connect() {
                 await sendMessageAsUser(data.text);
 
                 // 3. 设置流式传输的回调
-                const streamCallback = (cumulativeText) => {
+                const streamCallback = (...args) => {
+                    // 调试：打印接收到的参数
+                    console.log('[Telegram Bridge] STREAM_TOKEN_RECEIVED 参数:', args);
+                    
                     // 标记为流式模式
                     isStreamingMode = true;
+                    
+                    // 获取累计文本 - 尝试多种可能的参数格式
+                    let cumulativeText = '';
+                    if (typeof args[0] === 'string') {
+                        cumulativeText = args[0];
+                    } else if (args[0] && typeof args[0].text === 'string') {
+                        cumulativeText = args[0].text;
+                    } else if (args[0] && typeof args[0].message === 'string') {
+                        cumulativeText = args[0].message;
+                    }
+                    
                     // 将每个文本块通过WebSocket发送到服务端
-                    if (ws && ws.readyState === WebSocket.OPEN) {
+                    if (ws && ws.readyState === WebSocket.OPEN && cumulativeText) {
                         ws.send(JSON.stringify({
                             type: 'stream_chunk',
                             chatId: data.chatId,
@@ -663,8 +677,11 @@ function decodeHtmlEntities(text) {
 
 // 全局事件监听器，用于最终消息更新
 function handleFinalMessage(lastMessageIdInChatArray) {
+    console.log(`[Telegram Bridge] handleFinalMessage 被调用, lastMessageId: ${lastMessageIdInChatArray}, lastProcessedChatId: ${lastProcessedChatId}, isStreamingMode: ${isStreamingMode}`);
+    
     // 确保WebSocket已连接，并且我们有一个有效的chatId来发送更新
     if (!ws || ws.readyState !== WebSocket.OPEN || !lastProcessedChatId) {
+        console.log('[Telegram Bridge] handleFinalMessage 提前返回: ws状态或chatId无效');
         return;
     }
 
