@@ -69,7 +69,8 @@ node server.js
 | `TELEGRAM_BOT_TOKEN` | Bot Token | 必填 |
 | `WSS_PORT` | WebSocket 端口 | 2333 |
 | `ALLOWED_USER_IDS` | 白名单（逗号分隔） | 空 |
-*| `MESSAGE_PARSE_MODE` | 消息格式 | HTML |
+
+* 关于渲染
 当前版本检测到前端部分会直接停止输出，tg没法渲染而且太长了分页体验也不好。
 
 ## 许可证
