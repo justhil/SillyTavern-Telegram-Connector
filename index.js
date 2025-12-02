@@ -369,7 +369,8 @@ function connect() {
                             if (characters.length > 0) {
                                 // 分页参数：每页显示20个角色
                                 const PAGE_SIZE = 20;
-                                const page = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const pageArg = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const page = isNaN(pageArg) ? 1 : pageArg;
                                 const totalPages = Math.ceil(characters.length / PAGE_SIZE);
                                 const currentPage = Math.max(1, Math.min(page, totalPages));
                                 const startIndex = (currentPage - 1) * PAGE_SIZE;
@@ -430,7 +431,8 @@ function connect() {
                             if (chatFiles.length > 0) {
                                 // 分页参数：每页显示15个聊天记录
                                 const CHAT_PAGE_SIZE = 15;
-                                const chatPage = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const chatPageArg = data.args && data.args[0] ? parseInt(data.args[0]) : 1;
+                                const chatPage = isNaN(chatPageArg) ? 1 : chatPageArg;
                                 const chatTotalPages = Math.ceil(chatFiles.length / CHAT_PAGE_SIZE);
                                 const chatCurrentPage = Math.max(1, Math.min(chatPage, chatTotalPages));
                                 const chatStartIndex = (chatCurrentPage - 1) * CHAT_PAGE_SIZE;

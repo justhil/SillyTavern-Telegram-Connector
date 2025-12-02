@@ -583,7 +583,7 @@ async function handleTelegramCommand(command, args, chatId) {
     // 特殊处理help命令，显示带按钮的菜单
     if (command === 'help') {
         replyText = `🤖 SillyTavern Telegram Bridge\n\n点击下方按钮快速操作，或使用命令：`;
-        
+
         const keyboard = {
             inline_keyboard: [
                 [
@@ -600,11 +600,11 @@ async function handleTelegramCommand(command, args, chatId) {
                 ]
             ]
         };
-        
+
         bot.sendMessage(chatId, replyText, { reply_markup: keyboard });
         return;
     }
-    
+
     // 显示详细帮助文本
     if (command === 'helptext') {
         replyText = `📖 命令列表：\n\n`;
@@ -620,7 +620,7 @@ async function handleTelegramCommand(command, args, chatId) {
         replyText += `/reload - 重载服务\n`;
         replyText += `/restart - 重启服务\n`;
         replyText += `/exit - 退出服务`;
-        
+
         sendLongMessage(bot, chatId, replyText);
         return;
     }
@@ -963,13 +963,13 @@ wss.on('connection', ws => {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
                     ongoingStreams.delete(data.chatId);
                 }
-                
+
                 // 检查是否有分页信息，添加分页按钮
                 const sendOptions = {};
                 if (data.pagination) {
                     const { currentPage, totalPages, type } = data.pagination;
                     const buttons = [];
-                    
+
                     // 上一页按钮
                     if (currentPage > 1) {
                         buttons.push({ text: '⬅️ 上一页', callback_data: `cmd_${type}_${currentPage - 1}` });
@@ -978,14 +978,14 @@ wss.on('connection', ws => {
                     if (currentPage < totalPages) {
                         buttons.push({ text: '➡️ 下一页', callback_data: `cmd_${type}_${currentPage + 1}` });
                     }
-                    
+
                     if (buttons.length > 0) {
                         sendOptions.reply_markup = {
                             inline_keyboard: [buttons]
                         };
                     }
                 }
-                
+
                 // 发送非流式回复
                 await bot.sendMessage(data.chatId, data.text, sendOptions).catch(err => {
                     logWithTimestamp('error', `发送非流式AI回复失败: ${err.message}`);
@@ -1081,9 +1081,9 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const userId = callbackQuery.from.id;
     const data = callbackQuery.data;
-    
+
     logWithTimestamp('log', `收到按钮回调: ${data}, 用户: ${userId}`);
-    
+
     // 检查白名单
     if (config.allowedUserIds && config.allowedUserIds.length > 0) {
         if (!config.allowedUserIds.includes(userId)) {
@@ -1091,14 +1091,14 @@ bot.on('callback_query', async (callbackQuery) => {
             return;
         }
     }
-    
+
     // 确认收到回调
     bot.answerCallbackQuery(callbackQuery.id);
-    
+
     // 解析命令
     if (data.startsWith('cmd_')) {
         const command = data.replace('cmd_', '');
-        
+
         // 处理分页命令
         if (data.startsWith('cmd_listchars_')) {
             const page = parseInt(data.replace('cmd_listchars_', ''));
@@ -1110,7 +1110,7 @@ bot.on('callback_query', async (callbackQuery) => {
             handleTelegramCommand('listchats', [page.toString()], chatId);
             return;
         }
-        
+
         // 处理普通命令
         switch (command) {
             case 'listchars':
