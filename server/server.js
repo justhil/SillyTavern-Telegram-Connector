@@ -743,11 +743,15 @@ wss.on('connection', ws => {
 
                     // 只有当字符数超过阈值时才发送初始消息 (Requirement 3.2)
                     if (session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
-                        bot.sendMessage(data.chatId, data.text + ' ...')
+                        logWithTimestamp('log', `字符数 ${session.charCount} 超过阈值，发送初始消息...`);
+                        // 截断过长的文本，避免超过 Telegram 限制
+                        const displayText = data.text.length > 4000 ? data.text.substring(0, 4000) + '...' : data.text + ' ...';
+                        bot.sendMessage(data.chatId, displayText)
                             .then(sentMessage => {
+                                logWithTimestamp('log', `初始消息发送成功，messageId: ${sentMessage.message_id}`);
                                 resolveMessagePromise(sentMessage.message_id);
                             }).catch(err => {
-                                logWithTimestamp('error', '发送初始Telegram消息失败:', err);
+                                logWithTimestamp('error', '发送初始Telegram消息失败:', err.message);
                                 stopTypingInterval(session.typingInterval);
                                 ongoingStreams.delete(data.chatId);
                             });
@@ -761,16 +765,20 @@ wss.on('connection', ws => {
                     const currentMessageId = await session.messagePromise.catch(() => null);
                     if (!currentMessageId && session.charCount >= MIN_CHARS_BEFORE_DISPLAY) {
                         // 需要发送初始消息
+                        logWithTimestamp('log', `会话已存在，字符数 ${session.charCount} 超过阈值，发送初始消息...`);
                         let resolveMessagePromise;
                         session.messagePromise = new Promise(resolve => {
                             resolveMessagePromise = resolve;
                         });
 
-                        bot.sendMessage(data.chatId, data.text + ' ...')
+                        // 截断过长的文本
+                        const displayText = data.text.length > 4000 ? data.text.substring(0, 4000) + '...' : data.text + ' ...';
+                        bot.sendMessage(data.chatId, displayText)
                             .then(sentMessage => {
+                                logWithTimestamp('log', `初始消息发送成功，messageId: ${sentMessage.message_id}`);
                                 resolveMessagePromise(sentMessage.message_id);
                             }).catch(err => {
-                                logWithTimestamp('error', '发送初始Telegram消息失败:', err);
+                                logWithTimestamp('error', '发送初始Telegram消息失败:', err.message);
                             });
                     }
                 }
@@ -787,7 +795,11 @@ wss.on('connection', ws => {
                             const currentMessageId = await currentSession.messagePromise;
                             if (currentMessageId) {
                                 currentSession.isEditing = true;
-                                bot.editMessageText(currentSession.lastText + ' ...', {
+                                // 截断过长的文本
+                                const editText = currentSession.lastText.length > 4000 
+                                    ? currentSession.lastText.substring(0, 4000) + '...' 
+                                    : currentSession.lastText + ' ...';
+                                bot.editMessageText(editText, {
                                     chat_id: data.chatId,
                                     message_id: currentMessageId,
                                 }).catch(err => {
