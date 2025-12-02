@@ -55,34 +55,101 @@ function splitLongMessage(text, maxLength = TELEGRAM_MAX_LENGTH) {
     return parts;
 }
 
+// 存储长消息的缓存，用于分页显示
+const longMessageCache = new Map();
+
 /**
- * 发送消息到 Telegram，自动处理超长消息
+ * 发送消息到 Telegram，超长消息使用分页按钮
  * @param {TelegramBot} bot - Telegram Bot 实例
  * @param {number} chatId - 聊天 ID
  * @param {string} text - 消息文本
  * @param {object} options - 发送选项
  */
 async function sendLongMessage(bot, chatId, text, options = {}) {
-    const parts = splitLongMessage(text);
-
-    for (let i = 0; i < parts.length; i++) {
+    // 如果消息不超长，直接发送
+    if (!text || text.length <= 4000) {
         try {
-            await bot.sendMessage(chatId, parts[i], options);
-            // 如果有多条消息，稍微延迟避免触发限流
-            if (parts.length > 1 && i < parts.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
+            await bot.sendMessage(chatId, text || '(空消息)', options);
         } catch (err) {
-            logWithTimestamp('error', `发送消息第${i + 1}/${parts.length}部分失败:`, err.message);
-            // 如果格式化消息发送失败，尝试纯文本
+            logWithTimestamp('error', '发送消息失败:', err.message);
+            // 如果格式化失败，尝试纯文本
             if (options.parse_mode) {
-                try {
-                    await bot.sendMessage(chatId, parts[i]);
-                } catch (fallbackErr) {
-                    logWithTimestamp('error', '回退到纯文本也失败:', fallbackErr.message);
-                }
+                await bot.sendMessage(chatId, text || '(空消息)').catch(() => {});
             }
         }
+        return;
+    }
+
+    // 超长消息：分页处理
+    const PAGE_SIZE = 3500; // 每页字符数
+    const parts = [];
+    let remaining = text;
+    
+    while (remaining.length > 0) {
+        if (remaining.length <= PAGE_SIZE) {
+            parts.push(remaining);
+            break;
+        }
+        // 尝试在换行符处分割
+        let splitIndex = remaining.lastIndexOf('\n', PAGE_SIZE);
+        if (splitIndex === -1 || splitIndex < PAGE_SIZE * 0.5) {
+            splitIndex = remaining.lastIndexOf(' ', PAGE_SIZE);
+        }
+        if (splitIndex === -1 || splitIndex < PAGE_SIZE * 0.5) {
+            splitIndex = PAGE_SIZE;
+        }
+        parts.push(remaining.substring(0, splitIndex));
+        remaining = remaining.substring(splitIndex).trimStart();
+    }
+
+    // 生成唯一的缓存ID
+    const cacheId = `msg_${chatId}_${Date.now()}`;
+    longMessageCache.set(cacheId, { parts, chatId });
+    
+    // 5分钟后自动清理缓存
+    setTimeout(() => longMessageCache.delete(cacheId), 5 * 60 * 1000);
+
+    // 发送第一页
+    await sendPagedMessage(bot, chatId, cacheId, 1, options);
+}
+
+/**
+ * 发送分页消息
+ */
+async function sendPagedMessage(bot, chatId, cacheId, page, options = {}) {
+    const cache = longMessageCache.get(cacheId);
+    if (!cache) {
+        await bot.sendMessage(chatId, '消息已过期，请重新请求');
+        return;
+    }
+
+    const { parts } = cache;
+    const totalPages = parts.length;
+    const currentPage = Math.max(1, Math.min(page, totalPages));
+    const content = parts[currentPage - 1];
+
+    // 构建分页按钮
+    const buttons = [];
+    if (currentPage > 1) {
+        buttons.push({ text: `⬅️ ${currentPage - 1}/${totalPages}`, callback_data: `page_${cacheId}_${currentPage - 1}` });
+    }
+    if (currentPage < totalPages) {
+        buttons.push({ text: `${currentPage + 1}/${totalPages} ➡️`, callback_data: `page_${cacheId}_${currentPage + 1}` });
+    }
+
+    const sendOptions = { ...options };
+    if (buttons.length > 0) {
+        sendOptions.reply_markup = { inline_keyboard: [buttons] };
+    }
+
+    const pageText = totalPages > 1 ? `📄 [${currentPage}/${totalPages}]\n\n${content}` : content;
+
+    try {
+        await bot.sendMessage(chatId, pageText, sendOptions);
+    } catch (err) {
+        logWithTimestamp('error', '发送分页消息失败:', err.message);
+        // 回退到纯文本
+        await bot.sendMessage(chatId, pageText).catch(() => {});
     }
 }
 
@@ -1094,6 +1161,22 @@ bot.on('callback_query', async (callbackQuery) => {
 
     // 确认收到回调
     bot.answerCallbackQuery(callbackQuery.id);
+
+    // 处理长消息分页
+    if (data.startsWith('page_')) {
+        const parts = data.split('_');
+        if (parts.length >= 3) {
+            const cacheId = `${parts[1]}_${parts[2]}_${parts[3]}`;
+            const page = parseInt(parts[4]);
+            if (!isNaN(page)) {
+                // 删除原消息
+                await bot.deleteMessage(chatId, callbackQuery.message.message_id).catch(() => {});
+                // 发送新页面
+                await sendPagedMessage(bot, chatId, cacheId, page, {});
+            }
+        }
+        return;
+    }
 
     // 解析命令
     if (data.startsWith('cmd_')) {
