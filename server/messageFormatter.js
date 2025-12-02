@@ -4,6 +4,62 @@
  */
 
 /**
+ * 智能过滤前端代码和无意义内容
+ * @param {string} text - 原始文本
+ * @returns {string} - 过滤后的文本
+ */
+function filterFrontendCode(text) {
+    if (!text) return '';
+    
+    let result = text;
+    
+    // 移除 HTML 标签块 (保留文本内容)
+    result = result.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+    result = result.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+    result = result.replace(/<link[^>]*>/gi, '');
+    result = result.replace(/<meta[^>]*>/gi, '');
+    
+    // 移除大段的 CSS 代码
+    result = result.replace(/```css[\s\S]*?```/gi, '[CSS代码已省略]');
+    result = result.replace(/```scss[\s\S]*?```/gi, '[SCSS代码已省略]');
+    result = result.replace(/```less[\s\S]*?```/gi, '[LESS代码已省略]');
+    
+    // 移除大段的 HTML 代码
+    result = result.replace(/```html[\s\S]*?```/gi, '[HTML代码已省略]');
+    result = result.replace(/```xml[\s\S]*?```/gi, '[XML代码已省略]');
+    
+    // 移除大段的 JavaScript 代码
+    result = result.replace(/```javascript[\s\S]*?```/gi, '[JavaScript代码已省略]');
+    result = result.replace(/```js[\s\S]*?```/gi, '[JavaScript代码已省略]');
+    result = result.replace(/```typescript[\s\S]*?```/gi, '[TypeScript代码已省略]');
+    result = result.replace(/```ts[\s\S]*?```/gi, '[TypeScript代码已省略]');
+    
+    // 移除大段的 JSON 代码 (超过500字符的)
+    result = result.replace(/```json([\s\S]*?)```/gi, (match, code) => {
+        if (code.length > 500) return '[JSON数据已省略]';
+        return match;
+    });
+    
+    // 移除无标记的大段代码块 (超过1000字符且看起来像代码的)
+    result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
+        // 检测是否是代码 (包含大量特殊字符)
+        const codeIndicators = (code.match(/[{}\[\]();=<>]/g) || []).length;
+        if (code.length > 1000 && codeIndicators > 50) {
+            return '[代码块已省略]';
+        }
+        return match;
+    });
+    
+    // 移除连续的空行 (超过2个)
+    result = result.replace(/\n{4,}/g, '\n\n\n');
+    
+    // 移除行首行尾空白
+    result = result.trim();
+    
+    return result;
+}
+
+/**
  * 转义 HTML 特殊字符
  * @param {string} text - 原始文本
  * @returns {string} - 转义后的文本
@@ -145,35 +201,39 @@ function format(text, config = {}) {
         parseMode = 'HTML',
         enableBold = true,
         enableItalic = true,
-        enableCodeBlocks = true
+        enableCodeBlocks = true,
+        filterCode = true  // 默认启用代码过滤
     } = config;
     
     if (!text) {
         return { text: '', parseMode: null };
     }
     
+    // 先过滤前端代码
+    let processedText = filterCode ? filterFrontendCode(text) : text;
+    
     try {
         switch (parseMode) {
             case 'HTML':
                 return {
-                    text: convertToHtml(text, { enableBold, enableItalic, enableCodeBlocks }),
+                    text: convertToHtml(processedText, { enableBold, enableItalic, enableCodeBlocks }),
                     parseMode: 'HTML'
                 };
             
             case 'MarkdownV2':
                 return {
-                    text: convertToMarkdownV2(text, { enableBold, enableItalic, enableCodeBlocks }),
+                    text: convertToMarkdownV2(processedText, { enableBold, enableItalic, enableCodeBlocks }),
                     parseMode: 'MarkdownV2'
                 };
             
             default:
                 // 纯文本模式，不做任何格式化
-                return { text, parseMode: null };
+                return { text: processedText, parseMode: null };
         }
     } catch (error) {
         // 格式化失败时回退到纯文本模式 (Requirement 4.5)
         console.error('[MessageFormatter] Format error, falling back to plain text:', error.message);
-        return { text, parseMode: null };
+        return { text: processedText, parseMode: null };
     }
 }
 
@@ -182,5 +242,6 @@ module.exports = {
     escapeMarkdownV2,
     convertToHtml,
     convertToMarkdownV2,
+    filterFrontendCode,
     format
 };
